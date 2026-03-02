@@ -22,4 +22,5 @@ def _get_processed_data(path: Path):
     if not path.exists():
         prepare_data()
 
-    return pd.read_csv(path)
+
+#    return pd.read_csv(path)
