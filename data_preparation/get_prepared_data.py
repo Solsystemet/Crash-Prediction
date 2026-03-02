@@ -1,6 +1,5 @@
 from pathlib import Path
 
-import pandas as pd
 
 from data_preparation.data_prepper import prepare_data
 
