@@ -4,7 +4,7 @@ import pandas as pd
 import pandera.errors
 import pytest
 
-from models.data_schemas.weather_stations import WeatherStationsSchema
+from models.data_schemas.full.weather_stations import WeatherStationsSchema
 
 # ---------------------------------------------------------------------------
 # Helpers
