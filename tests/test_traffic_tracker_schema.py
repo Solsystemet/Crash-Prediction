@@ -4,7 +4,7 @@ import pandas as pd
 import pandera.errors
 import pytest
 
-from models.data_schemas.traffic_tracker import TrafficTrackerSchema
+from models.data_schemas.full.traffic_tracker import TrafficTrackerSchema
 
 # ---------------------------------------------------------------------------
 # Helpers
