@@ -18,13 +18,13 @@ dependencies = [
     "torchvision>=0.25.0",
 ]
 
-[tool.hatch.build.targets.wheel]
-packages = ["data_preparation", "models", "training"]
-
-[project.optional-dependencies]
+[dependency-groups]
 dev = [
     "mypy>=1.19.1",
     "pytest>=9.0.2",
     "ruff>=0.15.2",
     "types-requests>=2.32.0",
 ]
+
+[tool.hatch.build.targets.wheel]
+packages = ["data_preparation", "models", "training"]
