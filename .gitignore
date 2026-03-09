@@ -6,6 +6,9 @@ __pycache__/
 *.py[codz]
 *$py.class
 
+#Jetbrians
+.idea/*
+
 # C extensions
 *.so
 
