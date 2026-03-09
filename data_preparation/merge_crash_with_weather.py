@@ -13,34 +13,18 @@ def merge_crash_with_weather(
     output_path: Path,
     crash_timestamp_col: str = "CRASH_DATE",
     weather_timestamp_col: str = "Measurement Timestamp",
-) -> pd.DataFrame:
+):
     """
     Merge crash data with weather data by rounding crash time to nearest hour.
 
-    Weather data is hourly, so each crash is matched to the closest weather reading.
-    - 10:00 - 10:29 → uses 10:00 weather
-    - 10:30 - 10:59 → uses 11:00 weather
-
-    Args:
-        crash_path: Path to crash CSV file
-        weather_path: Path to weather CSV file
-        output_path: Path to save merged CSV
-        crash_timestamp_col: Name of timestamp column in crash data
-        weather_timestamp_col: Name of timestamp column in weather data
-
-    Returns:
-        Merged DataFrame with crash data and corresponding weather data
-
     Example:
-        >>> from data_preparation.merge_crash_with_weather import merge_crash_with_weather
-        >>> from pathlib import Path
-
         >>> df = merge_crash_with_weather(
         ...     crash_path=Path("data/traffic_crashes.csv"),
         ...     weather_path=Path("data/weather.csv"),
         ...     output_path=Path("data/crashes_with_weather.csv")
         ... )
     """
+
     # Load data
     crash_df = get_traffic_crashes()
     weather_df = get_weather_stations()
@@ -85,11 +69,3 @@ def merge_crash_with_weather(
     print(f"Saved merged data to: {output_path}")
 
     return merged_df
-
-
-test = merge_crash_with_weather(Path("data/test.csv"))
-
-print(test.head())
-
-print(test.columns)
-print(len(test))
