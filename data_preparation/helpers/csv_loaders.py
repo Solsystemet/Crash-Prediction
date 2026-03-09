@@ -2,11 +2,14 @@ from pathlib import Path
 
 import pandas as pd
 
-from models.data_schemas import (
-    TrafficCrashesSchema,
-    TrafficTrackerSchema,
-    WeatherStationsSchema,
+from models.data_schemas.full.traffic_crashes import TrafficCrashesSchema
+from models.data_schemas.full.traffic_crashes_people import TrafficCrashesPeopleSchema
+from models.data_schemas.full.traffic_crashes_vehicles import (
+    TrafficCrashesVehiclesSchema,
 )
+from models.data_schemas.full.traffic_tracker import TrafficTrackerSchema
+from models.data_schemas.full.weather_stations import WeatherStationsSchema
+
 
 DATA_DIR = Path(__file__).resolve().parent.parent.parent / "data"
 
@@ -15,6 +18,8 @@ TRAFFIC_TRACKER_CSV = (
     DATA_DIR
     / "chicago_traffic_tracker_historical_congestion_estimates_by_segment_2024_current.csv"
 )
+TRAFFIC_CRASHES_PEOPLE_CSV = DATA_DIR / "traffic-crashes-people.csv"
+TRAFFIC_CRASHES_VEHICLES_CSV = DATA_DIR / "traffic_crashes_vehicles.csv"
 WEATHER_STATIONS_CSV = DATA_DIR / "beach_weather_stations_automated_sensors.csv"
 
 
@@ -39,6 +44,16 @@ def get_traffic_crashes():
     dataframe = _load_and_validate(TRAFFIC_CRASHES_CSV)
     dataframe = _strip_thousands_separators(dataframe, ["LANE_CNT"])
     return TrafficCrashesSchema.validate(dataframe)
+
+
+def get_crash_people():
+    dataframe = _load_and_validate(TRAFFIC_CRASHES_PEOPLE_CSV)
+    return TrafficCrashesPeopleSchema.validate(dataframe)
+
+
+def get_crash_vehicles():
+    dataframe = _load_and_validate(TRAFFIC_CRASHES_VEHICLES_CSV)
+    return TrafficCrashesVehiclesSchema.validate(dataframe)
 
 
 def get_traffic_tracker():
