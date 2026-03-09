@@ -43,6 +43,7 @@ def _strip_thousands_separators(
 def get_traffic_crashes():
     dataframe = _load_and_validate(TRAFFIC_CRASHES_CSV)
     dataframe = _strip_thousands_separators(dataframe, ["LANE_CNT"])
+    dataframe["LANE_CNT"] = pd.to_numeric(dataframe["LANE_CNT"], errors="coerce")
     return TrafficCrashesSchema.validate(dataframe)
 
 
