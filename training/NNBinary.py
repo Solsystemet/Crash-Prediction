@@ -1,5 +1,5 @@
-# training/severity_predictor.py
-"""Neural network to predict crash severity from crash data features."""
+# training/NN2.py
+"""Binary classification: predict if a crash results in injury or not."""
 
 import random
 from dataclasses import dataclass
@@ -9,9 +9,16 @@ import pandas as pd
 import torch
 import torch.nn as nn
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import classification_report, confusion_matrix, f1_score
-from sklearn.model_selection import StratifiedKFold, train_test_split
-from sklearn.preprocessing import LabelEncoder, StandardScaler
+from sklearn.metrics import (
+    classification_report,
+    confusion_matrix,
+    f1_score,
+    precision_recall_curve,
+    roc_auc_score,
+    precision_score,
+    recall_score,
+)
+from sklearn.preprocessing import StandardScaler
 from sklearn.utils.class_weight import compute_class_weight
 from torch.utils.data import DataLoader, TensorDataset
 from data_preparation.helpers.csv_loaders import get_traffic_crashes
@@ -50,6 +57,13 @@ ENGINEERED_FEATURES = [
 TARGET = "MOST_SEVERE_INJURY"
 RANDOM_SEED = 42
 
+# Binary classification mapping
+# INJURY = 1: Any actual injury occurred
+# NO_INJURY = 0: No injury or only reported (not evident)
+INJURY_CLASSES = ["FATAL", "INCAPACITATING INJURY", "NONINCAPACITATING INJURY"]
+NO_INJURY_CLASSES = ["NO INDICATION OF INJURY", "REPORTED, NOT EVIDENT"]
+BINARY_LABELS = ["NO_INJURY", "INJURY"]
+
 
 # ============================================================================
 # Reproducibility
@@ -73,31 +87,30 @@ def set_seed(seed: int = RANDOM_SEED):
 class TrainingArtifacts:
     """Container for all artifacts needed for inference."""
     model: nn.Module
-    label_encoder: LabelEncoder
     scaler: StandardScaler
     feature_columns: list[str]  # Column order for one-hot encoding
     history: dict
     class_weights: np.ndarray
     device: torch.device
+    threshold: float = 0.5  # Decision threshold for binary classification
 
 
 # ============================================================================
 # Model Architecture
 # ============================================================================
 
-class CrashSeverityNN(nn.Module):
-    """Feedforward neural network for crash severity prediction."""
+class CrashInjuryNN(nn.Module):
+    """Binary classifier: predicts probability of injury in a crash."""
 
     def __init__(
         self,
         input_size: int,
-        num_classes: int,
         hidden_sizes: list[int] | None = None,
         dropout_rate: float = 0.3,
     ):
         super().__init__()
         if hidden_sizes is None:
-            hidden_sizes = [512, 256, 128]
+            hidden_sizes = [256, 128, 64]
 
         layers = []
         prev_size = input_size
@@ -111,11 +124,12 @@ class CrashSeverityNN(nn.Module):
             ])
             prev_size = hidden_size
 
-        layers.append(nn.Linear(prev_size, num_classes))
+        # Single output for binary classification
+        layers.append(nn.Linear(prev_size, 1))
         self.network = nn.Sequential(*layers)
 
     def forward(self, x):
-        return self.network(x)
+        return self.network(x).squeeze(-1)  # Output shape: (batch_size,)
 
 
 # ============================================================================
@@ -144,19 +158,25 @@ def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def to_binary_target(severity: pd.Series) -> np.ndarray:
+    """Convert multiclass severity to binary: 1 = injury, 0 = no injury."""
+    return severity.isin(INJURY_CLASSES).astype(int).values
+
+
 def prepare_features(
     df: pd.DataFrame,
-    fit_encoder: bool = True,
-    label_encoder: LabelEncoder | None = None,
     expected_columns: list[str] | None = None,
-) -> tuple[np.ndarray, np.ndarray, LabelEncoder, list[str]]:
-    """Prepare features and target for training.
+) -> tuple[np.ndarray, np.ndarray, list[str]]:
+    """Prepare features and binary target for training.
     
     Args:
         df: DataFrame with crash data
-        fit_encoder: Whether to fit the label encoder (True for train)
-        label_encoder: Pre-fitted label encoder (required if fit_encoder=False)
         expected_columns: Categorical columns from training (required for test to align)
+    
+    Returns:
+        X: Feature matrix
+        y: Binary labels (1 = injury, 0 = no injury)
+        feature_columns: List of categorical column names for alignment
     """
     # Drop rows with missing target
     df = df.dropna(subset=[TARGET])
@@ -189,16 +209,10 @@ def prepare_features(
     # Combine features
     X = np.hstack([numeric_data, categorical_encoded])
     
-    # Encode target
-    if fit_encoder:
-        label_encoder = LabelEncoder()
-        y = label_encoder.fit_transform(df[TARGET])
-    else:
-        if label_encoder is None:
-            raise ValueError("label_encoder required when fit_encoder=False")
-        y = label_encoder.transform(df[TARGET])
+    # Binary target: 1 = injury occurred, 0 = no injury
+    y = to_binary_target(df[TARGET])
     
-    return X, y, label_encoder, feature_columns
+    return X, y, feature_columns
 
 
 # ============================================================================
@@ -210,11 +224,10 @@ def train_baseline(
     y_train: np.ndarray,
     X_test: np.ndarray,
     y_test: np.ndarray,
-    label_encoder: LabelEncoder,
 ) -> dict:
     """Train a Random Forest baseline for comparison."""
     print("\n" + "=" * 60)
-    print("BASELINE: Random Forest")
+    print("BASELINE: Random Forest (Binary)")
     print("=" * 60)
     
     rf = RandomForestClassifier(
@@ -226,32 +239,49 @@ def train_baseline(
     rf.fit(X_train, y_train)
     
     y_pred = rf.predict(X_test)
+    y_prob = rf.predict_proba(X_test)[:, 1]
+    
     accuracy = rf.score(X_test, y_test)
-    f1_macro = f1_score(y_test, y_pred, average="macro")
+    f1 = f1_score(y_test, y_pred)
+    precision = precision_score(y_test, y_pred)
+    recall = recall_score(y_test, y_pred)
+    auc = roc_auc_score(y_test, y_prob)
     
-    print(f"Accuracy: {accuracy:.4f}")
-    print(f"F1-Macro: {f1_macro:.4f}")
+    print(f"Accuracy:  {accuracy:.4f}")
+    print(f"Precision: {precision:.4f}")
+    print(f"Recall:    {recall:.4f}")
+    print(f"F1-Score:  {f1:.4f}")
+    print(f"AUC-ROC:   {auc:.4f}")
     print("\nClassification Report:")
-    print(classification_report(y_test, y_pred, target_names=label_encoder.classes_))
+    print(classification_report(y_test, y_pred, target_names=BINARY_LABELS))
     
-    return {"accuracy": accuracy, "f1_macro": f1_macro, "model": rf}
+    return {"accuracy": accuracy, "f1": f1, "auc": auc, "model": rf}
 
 
 # ============================================================================
 # Training
 # ============================================================================
 
+def find_best_threshold(y_true: np.ndarray, y_prob: np.ndarray) -> float:
+    """Find threshold that maximizes F1 score."""
+    precision, recall, thresholds = precision_recall_curve(y_true, y_prob)
+    # Compute F1 for each threshold
+    f1_scores = 2 * (precision * recall) / (precision + recall + 1e-8)
+    best_idx = np.argmax(f1_scores[:-1])  # Last element is for threshold=1
+    return thresholds[best_idx]
+
+
 def train_model(
     epochs: int = 100,
     batch_size: int = 512,
     learning_rate: float = 0.001,
-    patience: int = 10,
+    patience: int = 15,
     use_class_weights: bool = True,
     run_baseline: bool = True,
     device: str | None = None,
-    train_years: int = 2,
+    train_years: int = 7,
 ) -> TrainingArtifacts:
-    """Train the crash severity prediction model with best practices.
+    """Train binary crash injury classifier.
     
     Args:
         train_years: Number of years from start of data to use for training.
@@ -288,70 +318,64 @@ def train_model(
     print(f"Training: {min_date.date()} to {train_cutoff.date()} ({len(train_data):,} records)")
     print(f"Testing:  {train_cutoff.date()} to {max_date.date()} ({len(test_data):,} records)")
     
-    # Prepare features (fit encoder on train only to prevent leakage)
-    print("Preparing features...")
-    X_train, y_train, label_encoder, feature_columns = prepare_features(
-        train_data, fit_encoder=True
-    )
-    X_test, y_test, _, _ = prepare_features(
-        test_data, fit_encoder=False, label_encoder=label_encoder,
-        expected_columns=feature_columns,
-    )
+    # Prepare features (binary classification)
+    print("Preparing features (binary: INJURY vs NO_INJURY)...")
+    X_train, y_train, feature_columns = prepare_features(train_data)
+    X_test, y_test, _ = prepare_features(test_data, expected_columns=feature_columns)
     
     # Scale features (fit on train only)
     scaler = StandardScaler()
     X_train = scaler.fit_transform(X_train)
     X_test = scaler.transform(X_test)
     
-    # Compute class weights
+    # Compute class weights for imbalanced data
     class_weights = compute_class_weight(
-        "balanced", classes=np.unique(y_train), y=y_train
+        "balanced", classes=np.array([0, 1]), y=y_train
     )
+    n_no_injury = np.sum(y_train == 0)
+    n_injury = np.sum(y_train == 1)
     print(f"\nClass distribution in training set:")
-    for cls, weight in zip(label_encoder.classes_, class_weights):
-        count = np.sum(y_train == label_encoder.transform([cls])[0])
-        print(f"  {cls}: {count:,} samples (weight: {weight:.2f})")
+    print(f"  NO_INJURY (0): {n_no_injury:,} ({100*n_no_injury/len(y_train):.1f}%) - weight: {class_weights[0]:.2f}")
+    print(f"  INJURY (1):    {n_injury:,} ({100*n_injury/len(y_train):.1f}%) - weight: {class_weights[1]:.2f}")
     
     # Run baseline comparison
     if run_baseline:
-        baseline_results = train_baseline(
-            X_train, y_train, X_test, y_test, label_encoder
-        )
+        baseline_results = train_baseline(X_train, y_train, X_test, y_test)
     
-    # Convert to tensors (keep on CPU for DataLoader, move to device in training loop)
+    # Convert to tensors
     X_train_t = torch.FloatTensor(X_train)
-    y_train_t = torch.LongTensor(y_train)
+    y_train_t = torch.FloatTensor(y_train)  # Float for BCEWithLogitsLoss
     X_test_t = torch.FloatTensor(X_test).to(device)
-    y_test_t = torch.LongTensor(y_test).to(device)
+    y_test_t = torch.FloatTensor(y_test).to(device)
     
-    # Create dataloader (data stays on CPU, batches moved to GPU in training loop)
+    # Create dataloader
     train_dataset = TensorDataset(X_train_t, y_train_t)
     train_loader = DataLoader(
         train_dataset,
         batch_size=batch_size,
         shuffle=True,
-        pin_memory=(device.type == "cuda"),  # Faster CPU->GPU transfer
-        num_workers=0,  # Set >0 for parallel data loading if needed
+        pin_memory=(device.type == "cuda"),
+        num_workers=0,
     )
     
     # Initialize model
     input_size = X_train.shape[1]
-    num_classes = len(label_encoder.classes_)
-    model = CrashSeverityNN(input_size, num_classes).to(device)
+    model = CrashInjuryNN(input_size).to(device)
     
     print("\n" + "=" * 60)
-    print("NEURAL NETWORK TRAINING")
+    print("NEURAL NETWORK TRAINING (Binary Classification)")
     print("=" * 60)
-    print(f"Model: {input_size} inputs -> {num_classes} classes")
-    print(f"Architecture: {[512, 256, 128]} hidden layers")
+    print(f"Model: {input_size} inputs -> 1 output (sigmoid)")
+    print(f"Architecture: [256, 128, 64] hidden layers")
     
-    # Loss with class weights
+    # Binary cross-entropy with logits (more numerically stable)
     if use_class_weights:
-        weight_tensor = torch.FloatTensor(class_weights).to(device)
-        criterion = nn.CrossEntropyLoss(weight=weight_tensor)
-        print("Using class-weighted loss")
+        # pos_weight = weight for positive class (injury)
+        pos_weight = torch.tensor([class_weights[1] / class_weights[0]]).to(device)
+        criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+        print(f"Using weighted loss (pos_weight: {pos_weight.item():.2f})")
     else:
-        criterion = nn.CrossEntropyLoss()
+        criterion = nn.BCEWithLogitsLoss()
     
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
     
@@ -360,10 +384,11 @@ def train_model(
         "train_loss": [],
         "train_acc": [],
         "test_acc": [],
-        "test_f1_macro": [],
+        "test_f1": [],
+        "test_auc": [],
     }
     
-    best_f1 = 0.0
+    best_auc = 0.0
     best_model_state = None
     patience_counter = 0
     
@@ -375,7 +400,6 @@ def train_model(
         total = 0
         
         for batch_X, batch_y in train_loader:
-            # Move batch to device (GPU if available)
             batch_X = batch_X.to(device, non_blocking=True)
             batch_y = batch_y.to(device, non_blocking=True)
             
@@ -386,20 +410,21 @@ def train_model(
             optimizer.step()
             
             total_loss += loss.item()
-            _, predicted = torch.max(outputs.data, 1)
+            predicted = (torch.sigmoid(outputs) > 0.5).float()
             total += batch_y.size(0)
             correct += (predicted == batch_y).sum().item()
         
         # Evaluation phase
         model.eval()
         with torch.no_grad():
-            test_outputs = model(X_test_t)
-            _, test_predicted = torch.max(test_outputs.data, 1)
-            test_predicted_np = test_predicted.cpu().numpy()
+            test_logits = model(X_test_t)
+            test_probs = torch.sigmoid(test_logits).cpu().numpy()
+            test_predicted = (test_probs > 0.5).astype(int)
             y_test_np = y_test_t.cpu().numpy()
             
-            test_acc = (test_predicted == y_test_t).sum().item() / len(y_test_t)
-            test_f1 = f1_score(y_test_np, test_predicted_np, average="macro")
+            test_acc = np.mean(test_predicted == y_test_np)
+            test_f1 = f1_score(y_test_np, test_predicted)
+            test_auc = roc_auc_score(y_test_np, test_probs)
         
         train_acc = correct / total
         avg_loss = total_loss / len(train_loader)
@@ -407,11 +432,12 @@ def train_model(
         history["train_loss"].append(avg_loss)
         history["train_acc"].append(train_acc)
         history["test_acc"].append(test_acc)
-        history["test_f1_macro"].append(test_f1)
+        history["test_f1"].append(test_f1)
+        history["test_auc"].append(test_auc)
         
-        # Early stopping check (based on F1-macro, not accuracy)
-        if test_f1 > best_f1:
-            best_f1 = test_f1
+        # Early stopping based on AUC (threshold-independent metric)
+        if test_auc > best_auc:
+            best_auc = test_auc
             best_model_state = model.state_dict().copy()
             patience_counter = 0
         else:
@@ -424,11 +450,11 @@ def train_model(
                 f"Loss: {avg_loss:.4f} - "
                 f"Train Acc: {train_acc:.4f} - "
                 f"Test Acc: {test_acc:.4f} - "
-                f"Test F1: {test_f1:.4f}"
+                f"Test F1: {test_f1:.4f} - "
+                f"Test AUC: {test_auc:.4f}"
                 + (" *" if patience_counter == 0 else "")
             )
         
-        # Early stopping
         if patience_counter >= patience:
             print(f"\nEarly stopping at epoch {epoch+1} (no improvement for {patience} epochs)")
             break
@@ -436,46 +462,60 @@ def train_model(
     # Restore best model
     if best_model_state is not None:
         model.load_state_dict(best_model_state)
-        print(f"\nRestored best model (F1-macro: {best_f1:.4f})")
+        print(f"\nRestored best model (AUC: {best_auc:.4f})")
     
-    # Final evaluation
+    # Find optimal threshold on test set
+    model.eval()
+    with torch.no_grad():
+        test_logits = model(X_test_t)
+        test_probs = torch.sigmoid(test_logits).cpu().numpy()
+        y_test_np = y_test_t.cpu().numpy()
+    
+    best_threshold = find_best_threshold(y_test_np, test_probs)
+    print(f"Optimal threshold: {best_threshold:.3f}")
+    
+    # Final evaluation with optimal threshold
+    test_predicted = (test_probs > best_threshold).astype(int)
+    
     print("\n" + "=" * 60)
     print("FINAL EVALUATION")
     print("=" * 60)
     
-    model.eval()
-    with torch.no_grad():
-        test_outputs = model(X_test_t)
-        _, test_predicted = torch.max(test_outputs.data, 1)
-        test_predicted_np = test_predicted.cpu().numpy()
-        y_test_np = y_test_t.cpu().numpy()
-    
     print("\nClassification Report:")
-    print(classification_report(y_test_np, test_predicted_np, target_names=label_encoder.classes_))
+    print(classification_report(y_test_np, test_predicted, target_names=BINARY_LABELS))
     
     print("Confusion Matrix:")
-    print(confusion_matrix(y_test_np, test_predicted_np))
+    cm = confusion_matrix(y_test_np, test_predicted)
+    print(cm)
+    print(f"\n  TN={cm[0,0]:,}  FP={cm[0,1]:,}")
+    print(f"  FN={cm[1,0]:,}  TP={cm[1,1]:,}")
     
-    final_f1 = f1_score(y_test_np, test_predicted_np, average="macro")
-    final_acc = (test_predicted_np == y_test_np).sum() / len(y_test_np)
+    final_acc = np.mean(test_predicted == y_test_np)
+    final_f1 = f1_score(y_test_np, test_predicted)
+    final_precision = precision_score(y_test_np, test_predicted)
+    final_recall = recall_score(y_test_np, test_predicted)
+    final_auc = roc_auc_score(y_test_np, test_probs)
     
-    print(f"\nFinal Metrics:")
+    print(f"\nFinal Metrics (threshold={best_threshold:.3f}):")
     print(f"  Accuracy:  {final_acc:.4f}")
-    print(f"  F1-Macro:  {final_f1:.4f}")
+    print(f"  Precision: {final_precision:.4f}")
+    print(f"  Recall:    {final_recall:.4f}")
+    print(f"  F1-Score:  {final_f1:.4f}")
+    print(f"  AUC-ROC:   {final_auc:.4f}")
     
     if run_baseline:
         print(f"\nComparison with Random Forest baseline:")
-        print(f"  RF Accuracy: {baseline_results['accuracy']:.4f} | NN: {final_acc:.4f}")
-        print(f"  RF F1-Macro: {baseline_results['f1_macro']:.4f} | NN: {final_f1:.4f}")
+        print(f"  RF F1:  {baseline_results['f1']:.4f} | NN: {final_f1:.4f}")
+        print(f"  RF AUC: {baseline_results['auc']:.4f} | NN: {final_auc:.4f}")
     
     return TrainingArtifacts(
         model=model,
-        label_encoder=label_encoder,
         scaler=scaler,
         feature_columns=feature_columns,
         history=history,
         class_weights=class_weights,
         device=device,
+        threshold=best_threshold,
     )
 
 
@@ -483,7 +523,7 @@ def train_model(
 # Inference
 # ============================================================================
 
-def predict_severity(
+def predict_injury(
     artifacts: TrainingArtifacts,
     crash_hour: int,
     crash_day: int,
@@ -498,11 +538,11 @@ def predict_severity(
     road_defect: str = "NO DEFECTS",
     traffic_device: str = "NO CONTROLS",
     device_condition: str = "NO CONTROLS",
-) -> tuple[str, dict[str, float]]:
-    """Predict severity for a single crash scenario.
+) -> tuple[str, float]:
+    """Predict if a crash scenario will result in injury.
     
     Returns:
-        Tuple of (predicted_class, probability_dict)
+        Tuple of (predicted_class, injury_probability)
     """
     # Build feature dataframe
     df = pd.DataFrame([{
@@ -543,21 +583,16 @@ def predict_severity(
     X = np.hstack([numeric_data, categorical_df.values])
     X = artifacts.scaler.transform(X)
     
-    # Predict (move tensor to same device as model)
+    # Predict
     artifacts.model.eval()
     with torch.no_grad():
         X_tensor = torch.FloatTensor(X).to(artifacts.device)
-        outputs = artifacts.model(X_tensor)
-        probabilities = torch.softmax(outputs, dim=1).cpu().numpy()[0]
-        predicted_idx = np.argmax(probabilities)
+        logit = artifacts.model(X_tensor)
+        injury_prob = torch.sigmoid(logit).cpu().item()
     
-    predicted_class = artifacts.label_encoder.inverse_transform([predicted_idx])[0]
-    prob_dict = {
-        cls: float(prob) 
-        for cls, prob in zip(artifacts.label_encoder.classes_, probabilities)
-    }
+    predicted_class = "INJURY" if injury_prob > artifacts.threshold else "NO_INJURY"
     
-    return predicted_class, prob_dict
+    return predicted_class, injury_prob
 
 
 # ============================================================================
@@ -565,10 +600,10 @@ def predict_severity(
 # ============================================================================
 
 if __name__ == "__main__":
-    # Train model (2013-2020 for training, 2020+ for testing)
+    # Train binary classifier (2013-2020 for training, 2020+ for testing)
     artifacts = train_model(
         epochs=100,
-        patience=10,
+        patience=15,
         use_class_weights=True,
         run_baseline=True,
         train_years=7,
@@ -577,30 +612,43 @@ if __name__ == "__main__":
     # Save model and artifacts
     torch.save({
         "model_state_dict": artifacts.model.state_dict(),
-        "label_encoder_classes": artifacts.label_encoder.classes_,
         "scaler_mean": artifacts.scaler.mean_,
         "scaler_scale": artifacts.scaler.scale_,
         "feature_columns": artifacts.feature_columns,
         "class_weights": artifacts.class_weights,
-    }, "crash_severity_model.pth")
-    print("\nModel saved to crash_severity_model.pth")
+        "threshold": artifacts.threshold,
+    }, "crash_injury_model.pth")
+    print("\nModel saved to crash_injury_model.pth")
     
-    # Example prediction
+    # Example predictions
     print("\n" + "=" * 60)
-    print("EXAMPLE PREDICTION")
+    print("EXAMPLE PREDICTIONS")
     print("=" * 60)
-    predicted, probs = predict_severity(
+    
+    # High-risk scenario
+    predicted, prob = predict_injury(
         artifacts,
         crash_hour=22,      # 10 PM
         crash_day=7,        # Saturday
         crash_month=12,     # December
         latitude=41.8781,
         longitude=-87.6298,
-        posted_speed=35,
+        posted_speed=45,
         weather="SNOW",
         lighting="DARKNESS",
     )
-    print(f"Predicted severity: {predicted}")
-    print("Probabilities:")
-    for cls, prob in sorted(probs.items(), key=lambda x: -x[1]):
-        print(f"  {cls}: {prob:.2%}")
+    print(f"High-risk scenario: {predicted} (injury prob: {prob:.1%})")
+    
+    # Low-risk scenario
+    predicted, prob = predict_injury(
+        artifacts,
+        crash_hour=10,      # 10 AM
+        crash_day=3,        # Tuesday
+        crash_month=6,      # June
+        latitude=41.8781,
+        longitude=-87.6298,
+        posted_speed=25,
+        weather="CLEAR",
+        lighting="DAYLIGHT",
+    )
+    print(f"Low-risk scenario:  {predicted} (injury prob: {prob:.1%})")
