@@ -1,6 +1,8 @@
 import pandas as pd
 import torch
 
+from models.data_schemas.full.traffic_crashes import TrafficCrashesSchema
+
 
 def k_means(data: pd.DataFrame, centroids_count: int, num_iterations: int):
     """
@@ -27,3 +29,28 @@ def k_means(data: pd.DataFrame, centroids_count: int, num_iterations: int):
                 centroids[i] = torch.mean(tensor_data[labels == i], dim=0)
 
     return centroids, labels
+
+
+def group_by_k_means(data: pd.DataFrame, centroids: torch.Tensor) -> pd.DataFrame:
+    """
+    Assign each datapoint to its nearest centroid based only on latitude/longitude.
+
+    Args:
+        centroids: Tensor of shape (k, 2) containing centroid locations (lat, lon)
+        data: DataFrame with LATITUDE and LONGITUDE columns
+
+    Returns:
+        DataFrame with all original columns plus 'cluster' column
+    """
+    coords = data[
+        [TrafficCrashesSchema.LATITUDE, TrafficCrashesSchema.LONGITUDE]
+    ].values
+    tensor_coords = torch.from_numpy(coords).float()
+
+    distances = torch.cdist(tensor_coords, centroids)
+    _, labels = torch.min(distances, dim=1)
+
+    result = data.copy()
+    result["cluster"] = labels.numpy()
+
+    return result
