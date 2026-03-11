@@ -40,22 +40,22 @@ class FilteredTrafficTrackerSchema(pa.DataFrameModel):
         ge=1,
         le=12,
     )
-    START_LATITUDE: Series[float] | None = pa.Field(
+    START_LATITUDE: Series[float] = pa.Field(
         nullable=True,
     )
-    START_LONGITUDE: Series[float] | None = pa.Field(
+    START_LONGITUDE: Series[float] = pa.Field(
         nullable=True,
     )
-    END_LATITUDE: Series[float] | None = pa.Field(
+    END_LATITUDE: Series[float] = pa.Field(
         nullable=True,
     )
-    END_LONGITUDE: Series[float] | None = pa.Field(
+    END_LONGITUDE: Series[float] = pa.Field(
         nullable=True,
     )
-    START_LOCATION: Series[str] | None = pa.Field(
+    START_LOCATION: Series[str] = pa.Field(
         nullable=True,
     )
-    END_LOCATION: Series[str] | None = pa.Field(
+    END_LOCATION: Series[str] = pa.Field(
         nullable=True,
     )
 

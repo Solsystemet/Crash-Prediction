@@ -27,12 +27,12 @@ class TrafficTrackerSchema(pa.DataFrameModel):
     DIRECTION: Series[str] = pa.Field()
     FROM_STREET: Series[str] = pa.Field()
     TO_STREET: Series[str] = pa.Field()
-    LENGTH: Series[float] | None = pa.Field(
+    LENGTH: Series[float] = pa.Field(
         nullable=True,
         ge=0,
     )
     STREET_HEADING: Series[str] = pa.Field()
-    COMMENTS: Series[str] | None = pa.Field(
+    COMMENTS: Series[str] = pa.Field(
         nullable=True,
     )
     BUS_COUNT: Series[int] = pa.Field(
@@ -56,22 +56,22 @@ class TrafficTrackerSchema(pa.DataFrameModel):
     RECORD_ID: Series[str] = pa.Field(
         unique=True,
     )
-    START_LATITUDE: Series[float] | None = pa.Field(
+    START_LATITUDE: Series[float] = pa.Field(
         nullable=True,
     )
-    START_LONGITUDE: Series[float] | None = pa.Field(
+    START_LONGITUDE: Series[float] = pa.Field(
         nullable=True,
     )
-    END_LATITUDE: Series[float] | None = pa.Field(
+    END_LATITUDE: Series[float] = pa.Field(
         nullable=True,
     )
-    END_LONGITUDE: Series[float] | None = pa.Field(
+    END_LONGITUDE: Series[float] = pa.Field(
         nullable=True,
     )
-    START_LOCATION: Series[str] | None = pa.Field(
+    START_LOCATION: Series[str] = pa.Field(
         nullable=True,
     )
-    END_LOCATION: Series[str] | None = pa.Field(
+    END_LOCATION: Series[str] = pa.Field(
         nullable=True,
     )
 
