@@ -14,7 +14,7 @@ import pandera.pandas as pa
 from pandera.typing import Series
 
 
-class TrafficCrashesVehiclesSchema(pa.DataFrameModel):
+class FilteredTrafficCrashesVehiclesSchema(pa.DataFrameModel):
     """Schema for the Traffic Crashes - Vehicles dataset.
 
     Each row represents a single vehicle involved in a traffic crash. The
@@ -24,33 +24,33 @@ class TrafficCrashesVehiclesSchema(pa.DataFrameModel):
 
     # Identifiers
     CRASH_RECORD_ID: Series[str] = pa.Field()
-    VEHICLE_ID: Series[float] | None = pa.Field(
+    VEHICLE_ID: Series[float] = pa.Field(
         nullable=True,
     )
 
     # Vehicle identification
-    MAKE: Series[str] | None = pa.Field(
+    MAKE: Series[str] = pa.Field(
         nullable=True,
     )
-    MODEL: Series[str] | None = pa.Field(
+    MODEL: Series[str] = pa.Field(
         nullable=True,
     )
-    VEHICLE_YEAR: Series[float] | None = pa.Field(
+    VEHICLE_YEAR: Series[float] = pa.Field(
         nullable=True,
         ge=1900,
         le=9999,
     )
-    VEHICLE_TYPE: Series[str] | None = pa.Field(
+    VEHICLE_TYPE: Series[str] = pa.Field(
         nullable=True,
     )
 
     # Movement and maneuvers
-    EXCEED_SPEED_LIMIT_I: Series[str] | None = pa.Field(
+    EXCEED_SPEED_LIMIT_I: Series[str] = pa.Field(
         nullable=True,
     )
 
     # Trailer information
-    TOTAL_VEHICLE_LENGTH: Series[str] | None = pa.Field(
+    TOTAL_VEHICLE_LENGTH: Series[str] = pa.Field(
         nullable=True,
     )
 

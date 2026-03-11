@@ -1,10 +1,14 @@
 """Unit tests for the WeatherStationsSchema."""
 
+from pathlib import Path
+
 import pandas as pd
 import pandera.errors
 import pytest
 
 from models.data_schemas.full.weather_stations import WeatherStationsSchema
+
+DATA_FILE = Path("data/beach_weather_stations_automated_sensors.csv")
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -120,9 +124,10 @@ class TestWeatherStationsSchemaValid:
         validated = WeatherStationsSchema.validate(df)
         assert len(validated) == 1
 
+    @pytest.mark.skipif(not DATA_FILE.exists(), reason=f"{DATA_FILE} not found")
     def test_csv_sample(self) -> None:
         """Validate a sample from the real CSV file."""
-        df = pd.read_csv("data/beach_weather_stations_automated_sensors.csv", nrows=500)
+        df = pd.read_csv(DATA_FILE, nrows=500)
         validated = WeatherStationsSchema.validate(df)
         assert len(validated) == 500
 

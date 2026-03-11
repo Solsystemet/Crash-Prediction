@@ -23,70 +23,70 @@ class WeatherStationsSchema(pa.DataFrameModel):
     Measurement_Timestamp: Series[str] = pa.Field(
         alias="Measurement Timestamp",
     )
-    Air_Temperature: Series[float] | None = pa.Field(
+    Air_Temperature: Series[float] = pa.Field(
         alias="Air Temperature",
         nullable=True,
     )
-    Wet_Bulb_Temperature: Series[float] | None = pa.Field(
+    Wet_Bulb_Temperature: Series[float] = pa.Field(
         alias="Wet Bulb Temperature",
         nullable=True,
     )
-    Humidity: Series[float] | None = pa.Field(
+    Humidity: Series[float] = pa.Field(
         alias="Humidity",
         nullable=True,
         ge=0,
         le=100,
     )
-    Rain_Intensity: Series[float] | None = pa.Field(
+    Rain_Intensity: Series[float] = pa.Field(
         alias="Rain Intensity",
         nullable=True,
         ge=0,
     )
-    Interval_Rain: Series[float] | None = pa.Field(
+    Interval_Rain: Series[float] = pa.Field(
         alias="Interval Rain",
         nullable=True,
     )
-    Total_Rain: Series[float] | None = pa.Field(
+    Total_Rain: Series[float] = pa.Field(
         alias="Total Rain",
         nullable=True,
         ge=0,
     )
-    Precipitation_Type: Series[float] | None = pa.Field(
+    Precipitation_Type: Series[float] = pa.Field(
         alias="Precipitation Type",
         nullable=True,
         isin=[0, 5, 40, 60, 70],
     )
-    Wind_Direction: Series[float] | None = pa.Field(
+    Wind_Direction: Series[float] = pa.Field(
         alias="Wind Direction",
         nullable=True,
         ge=0,
         le=360,
     )
-    Wind_Speed: Series[float] | None = pa.Field(
+    Wind_Speed: Series[float] = pa.Field(
         alias="Wind Speed",
         nullable=True,
         ge=0,
     )
-    Maximum_Wind_Speed: Series[float] | None = pa.Field(
+    Maximum_Wind_Speed: Series[float] = pa.Field(
         alias="Maximum Wind Speed",
         nullable=True,
         ge=0,
     )
-    Barometric_Pressure: Series[float] | None = pa.Field(
+    Barometric_Pressure: Series[float] = pa.Field(
         alias="Barometric Pressure",
         nullable=True,
     )
-    Solar_Radiation: Series[float] | None = pa.Field(
+    Solar_Radiation: Series[float] = pa.Field(
         alias="Solar Radiation",
         nullable=True,
     )
-    Heading: Series[float] | None = pa.Field(
+    Heading: Series[float] = pa.Field(
         alias="Heading",
         nullable=True,
         ge=0,
         le=360,
     )
-    Battery_Life: Series[float] | None = pa.Field(
+    Battery_Life: Series[float] = pa.Field(
         alias="Battery Life",
         nullable=True,
     )

@@ -1,10 +1,14 @@
 """Unit tests for the TrafficCrashesSchema."""
 
+from pathlib import Path
+
 import pandas as pd
 import pandera.errors
 import pytest
 
 from models.data_schemas.full.traffic_crashes import TrafficCrashesSchema
+
+DATA_FILE = Path("data/traffic_crashes.csv")
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -142,9 +146,10 @@ class TestTrafficCrashesSchemaValid:
             validated = TrafficCrashesSchema.validate(df)
             assert len(validated) == 1
 
+    @pytest.mark.skipif(not DATA_FILE.exists(), reason=f"{DATA_FILE} not found")
     def test_csv_sample(self) -> None:
         """Validate a sample from the real CSV file."""
-        df = pd.read_csv("data/traffic_crashes.csv", nrows=500)
+        df = pd.read_csv(DATA_FILE, nrows=500)
         validated = TrafficCrashesSchema.validate(df)
         assert len(validated) == 500
 
