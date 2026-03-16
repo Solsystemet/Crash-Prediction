@@ -127,7 +127,7 @@ def print_metrics(metrics: EvaluationMetrics, title: str = "Evaluation Results")
     print(f"  Accuracy:  {metrics.accuracy:.4f}")
     print(f"  Precision: {metrics.precision:.4f}")
     print(f"  Recall:    {metrics.recall:.4f}")
-    print(f"  F1 (macro): {metrics.f1:.4f}")
+    print(f"  F1 (macro): {metrics.f1:.4f}", flush=True)
 
 
 def print_classification_report_full(
@@ -159,7 +159,8 @@ def print_classification_report_full(
             labels=unique_labels,
             target_names=filtered_names,
             zero_division=0,
-        )
+        ),
+        flush=True,
     )
 
 
@@ -189,9 +190,9 @@ def compare_models(
 
     if nn_metrics.f1 >= rf_metrics.f1:
         winner = "neural_network"
-        print(f"\n>>> Winner: Neural Network (F1: {nn_metrics.f1:.4f})")
+        print(f"\n>>> Winner: Neural Network (F1: {nn_metrics.f1:.4f})", flush=True)
     else:
         winner = "random_forest"
-        print(f"\n>>> Winner: Random Forest (F1: {rf_metrics.f1:.4f})")
+        print(f"\n>>> Winner: Random Forest (F1: {rf_metrics.f1:.4f})", flush=True)
 
     return winner
