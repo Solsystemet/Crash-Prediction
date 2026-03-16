@@ -3,6 +3,7 @@
 Run with: python -m training.main
 """
 
+import sys
 from pathlib import Path
 
 from torch.utils.data import DataLoader
@@ -49,6 +50,7 @@ def main() -> None:
     print(f"  Test:  {len(result.test_dataset):,} samples")
     print(f"  Features: {result.train_dataset.num_features}")
     print(f"  Classes: {result.encoder_registry.get_num_classes()}")
+    sys.stdout.flush()
 
     # Create DataLoaders for neural network
     train_loader = DataLoader(
@@ -156,6 +158,7 @@ def main() -> None:
     print("\n" + "=" * 60)
     print("Training complete!")
     print("=" * 60)
+    sys.stdout.flush()
 
 
 if __name__ == "__main__":
