@@ -5,9 +5,11 @@ data/
 __pycache__/
 *.py[codz]
 *$py.class
+uv.lock
 
-#Jetbrians
+#IDE
 .idea/*
+.vscode/*
 
 # C extensions
 *.so
