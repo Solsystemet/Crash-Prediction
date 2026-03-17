@@ -1,10 +1,16 @@
 """Unit tests for the TrafficTrackerSchema."""
 
+from pathlib import Path
+
 import pandas as pd
 import pandera.errors
 import pytest
 
 from models.data_schemas.full.traffic_tracker import TrafficTrackerSchema
+
+DATA_FILE = Path(
+    "data/chicago_traffic_tracker_historical_congestion_estimates_by_segment_2024_current.csv"
+)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -110,12 +116,10 @@ class TestTrafficTrackerSchemaValid:
             validated = TrafficTrackerSchema.validate(df)
             assert len(validated) == 1
 
+    @pytest.mark.skipif(not DATA_FILE.exists(), reason=f"{DATA_FILE} not found")
     def test_csv_sample(self) -> None:
         """Validate a sample from the real CSV file."""
-        df = pd.read_csv(
-            "data/chicago_traffic_tracker_historical_congestion_estimates_by_segment_2024_current.csv",
-            nrows=500,
-        )
+        df = pd.read_csv(DATA_FILE, nrows=500)
         validated = TrafficTrackerSchema.validate(df)
         assert len(validated) == 500
 

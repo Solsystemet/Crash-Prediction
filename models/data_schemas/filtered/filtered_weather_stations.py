@@ -20,31 +20,31 @@ class FilteredWeatherStationsSchema(pa.DataFrameModel):
     Measurement_Timestamp: Series[str] = pa.Field(
         alias="Measurement Timestamp",
     )
-    Air_Temperature: Series[float] | None = pa.Field(
+    Air_Temperature: Series[float] = pa.Field(
         alias="Air Temperature",
         nullable=True,
     )
-    Humidity: Series[float] | None = pa.Field(
+    Humidity: Series[float] = pa.Field(
         alias="Humidity",
         nullable=True,
         ge=0,
         le=100,
     )
-    Rain_Intensity: Series[float] | None = pa.Field(
+    Rain_Intensity: Series[float] = pa.Field(
         alias="Rain Intensity",
         nullable=True,
         ge=0,
     )
-    Interval_Rain: Series[float] | None = pa.Field(
+    Interval_Rain: Series[float] = pa.Field(
         alias="Interval Rain",
         nullable=True,
     )
-    Total_Rain: Series[float] | None = pa.Field(
+    Total_Rain: Series[float] = pa.Field(
         alias="Total Rain",
         nullable=True,
         ge=0,
     )
-    Precipitation_Type: Series[float] | None = pa.Field(
+    Precipitation_Type: Series[float] = pa.Field(
         alias="Precipitation Type",
         nullable=True,
         isin=[0, 5, 40, 60, 70],

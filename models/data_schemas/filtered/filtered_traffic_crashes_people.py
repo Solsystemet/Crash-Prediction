@@ -15,7 +15,7 @@ import pandera.pandas as pa
 from pandera.typing import Series
 
 
-class TrafficCrashesPeopleSchema(pa.DataFrameModel):
+class FilteredTrafficCrashesPeopleSchema(pa.DataFrameModel):
     """Schema for the Traffic Crashes - People dataset.
 
     Each row represents a single person (driver, passenger, or pedestrian)
@@ -25,7 +25,7 @@ class TrafficCrashesPeopleSchema(pa.DataFrameModel):
 
     # Identifiers
     CRASH_RECORD_ID: Series[str] = pa.Field()
-    VEHICLE_ID: Series[float] | None = pa.Field(
+    VEHICLE_ID: Series[float] = pa.Field(
         nullable=True,
     )
     PERSON_TYPE: Series[str] = pa.Field(
@@ -40,19 +40,19 @@ class TrafficCrashesPeopleSchema(pa.DataFrameModel):
     )
 
     # Demographics
-    SEX: Series[str] | None = pa.Field(
+    SEX: Series[str] = pa.Field(
         nullable=True,
         isin=["M", "F", "X", "UNKNOWN"],
     )
-    AGE: Series[float] | None = pa.Field(
+    AGE: Series[float] = pa.Field(
         nullable=True,
     )
 
     # Safety and injury information
-    SAFETY_EQUIPMENT: Series[str] | None = pa.Field(
+    SAFETY_EQUIPMENT: Series[str] = pa.Field(
         nullable=True,
     )
-    INJURY_CLASSIFICATION: Series[str] | None = pa.Field(
+    INJURY_CLASSIFICATION: Series[str] = pa.Field(
         nullable=True,
         isin=[
             "NO INDICATION OF INJURY",
@@ -65,16 +65,16 @@ class TrafficCrashesPeopleSchema(pa.DataFrameModel):
     )
 
     # Alcohol-related information
-    BAC_RESULT: Series[str] | None = pa.Field(
+    BAC_RESULT: Series[str] = pa.Field(
         nullable=True,
     )
-    BAC_RESULT_VALUE: Series[float] | None = pa.Field(
+    BAC_RESULT_VALUE: Series[float] = pa.Field(
         nullable=True,
         ge=0.0,
     )
 
     # Cell phone usage
-    CELL_PHONE_USE: Series[str] | None = pa.Field(
+    CELL_PHONE_USE: Series[str] = pa.Field(
         nullable=True,
         isin=["Y", "N"],
     )
