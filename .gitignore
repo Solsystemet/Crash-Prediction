@@ -7,8 +7,9 @@ __pycache__/
 *$py.class
 uv.lock
 
-#Jetbrians
+#IDE
 .idea/*
+.vscode/*
 
 # C extensions
 *.so
