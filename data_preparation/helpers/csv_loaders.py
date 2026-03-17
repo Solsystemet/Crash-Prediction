@@ -33,10 +33,11 @@ def _load_and_validate(path: Path) -> pd.DataFrame:
 def _strip_thousands_separators(
     dataframe: pd.DataFrame, columns: list[str]
 ) -> pd.DataFrame:
-    """Remove comma thousands separators so values can be coerced to numeric."""
+    """Remove thousands separators (commas and dots) so values can be coerced to numeric."""
     for col in columns:
         if col in dataframe.columns:
-            dataframe[col] = dataframe[col].replace(r",", "", regex=True)
+            # Remove commas and dots used as thousands separators
+            dataframe[col] = dataframe[col].replace(r"[,.]", "", regex=True)
     return dataframe
 
 
