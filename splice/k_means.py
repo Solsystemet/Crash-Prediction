@@ -31,7 +31,7 @@ def k_means(data: pd.DataFrame, centroids_count: int, num_iterations: int):
     return centroids, labels
 
 
-def group_by_k_means(data: pd.DataFrame, centroids: torch.Tensor) -> pd.DataFrame:
+def group_by_k_means(centroids: torch.Tensor, data: pd.DataFrame) -> pd.DataFrame:
     """
     Assign each datapoint to its nearest centroid based only on latitude/longitude.
 
