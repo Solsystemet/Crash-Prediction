@@ -21,7 +21,7 @@ class FilteredTrafficCrashesSchema(pa.DataFrameModel):
     CRASH_RECORD_ID: Series[str] = pa.Field(
         unique=True,
     )
-    CRASH_DATE_EST_I: Series[str] | None = pa.Field(
+    CRASH_DATE_EST_I: Series[str] = pa.Field(
         nullable=True,
     )
     CRASH_DATE: Series[str] = pa.Field()
@@ -32,36 +32,36 @@ class FilteredTrafficCrashesSchema(pa.DataFrameModel):
     DEVICE_CONDITION: Series[str] = pa.Field()
     WEATHER_CONDITION: Series[str] = pa.Field()
     LIGHTING_CONDITION: Series[str] = pa.Field()
-    LANE_CNT: Series[float] | None = pa.Field(
+    LANE_CNT: Series[float] = pa.Field(
         nullable=True,
         ge=0,
     )
     ROADWAY_SURFACE_COND: Series[str] = pa.Field()
     ROAD_DEFECT: Series[str] = pa.Field()
-    MOST_SEVERE_INJURY: Series[str] | None = pa.Field(
+    MOST_SEVERE_INJURY: Series[str] = pa.Field(
         nullable=True,
     )
-    INJURIES_FATAL: Series[float] | None = pa.Field(
-        nullable=True,
-        ge=0,
-    )
-    INJURIES_INCAPACITATING: Series[float] | None = pa.Field(
+    INJURIES_FATAL: Series[float] = pa.Field(
         nullable=True,
         ge=0,
     )
-    INJURIES_NON_INCAPACITATING: Series[float] | None = pa.Field(
+    INJURIES_INCAPACITATING: Series[float] = pa.Field(
         nullable=True,
         ge=0,
     )
-    INJURIES_REPORTED_NOT_EVIDENT: Series[float] | None = pa.Field(
+    INJURIES_NON_INCAPACITATING: Series[float] = pa.Field(
         nullable=True,
         ge=0,
     )
-    INJURIES_NO_INDICATION: Series[float] | None = pa.Field(
+    INJURIES_REPORTED_NOT_EVIDENT: Series[float] = pa.Field(
         nullable=True,
         ge=0,
     )
-    INJURIES_UNKNOWN: Series[float] | None = pa.Field(
+    INJURIES_NO_INDICATION: Series[float] = pa.Field(
+        nullable=True,
+        ge=0,
+    )
+    INJURIES_UNKNOWN: Series[float] = pa.Field(
         nullable=True,
         ge=0,
     )
@@ -77,13 +77,13 @@ class FilteredTrafficCrashesSchema(pa.DataFrameModel):
         ge=1,
         le=12,
     )
-    LATITUDE: Series[float] | None = pa.Field(
+    LATITUDE: Series[float] = pa.Field(
         nullable=True,
     )
-    LONGITUDE: Series[float] | None = pa.Field(
+    LONGITUDE: Series[float] = pa.Field(
         nullable=True,
     )
-    LOCATION: Series[str] | None = pa.Field(
+    LOCATION: Series[str] = pa.Field(
         nullable=True,
     )
 
