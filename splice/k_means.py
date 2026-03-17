@@ -6,18 +6,27 @@ from models.data_schemas.full.traffic_crashes import TrafficCrashesSchema
 
 def k_means(data: pd.DataFrame, centroids_count: int, num_iterations: int):
     """
-    Perform K-means clustering on geographic data.
+    Perform K-means clustering on geographic data using latitude/longitude.
 
     Args:
-        data: DataFrame with numeric columns to cluster (e.g., LATITUDE, LONGITUDE)
+        data: DataFrame containing at least LATITUDE and LONGITUDE columns.
+              Only these two columns are used for clustering; any additional
+              columns are ignored when computing centroids.
         centroids_count: Number of clusters to create
         num_iterations: Number of iterations to run the algorithm
 
     Returns:
         tuple: (centroids, labels)
+
+    Notes:
+        The returned centroids have shape (centroids_count, 2) and are
+        directly compatible with `group_by_k_means`.
     """
 
-    tensor_data = torch.from_numpy(data.values).float()
+    coords = data[
+        [TrafficCrashesSchema.LATITUDE, TrafficCrashesSchema.LONGITUDE]
+    ].values
+    tensor_data = torch.from_numpy(coords).float()
     centroids = tensor_data[torch.randperm(tensor_data.size(0))[:centroids_count]]
 
     for _ in range(num_iterations):
