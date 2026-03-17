@@ -69,6 +69,7 @@ class TensorPipelineResult:
                 "random_seed": self.config.random_seed,
                 "fill_categorical_na": self.config.fill_categorical_na,
                 "fill_numerical_na": self.config.fill_numerical_na,
+                "exclude_target_values": self.config.exclude_target_values,
             },
         }
         torch.save(checkpoint, path)
@@ -156,6 +157,13 @@ def prepare_tensor_data(
     # Step 3: Filter to relevant columns and drop rows with missing target
     df_subset = df[all_cols].copy()
     df_subset = df_subset.dropna(subset=[target_col])
+
+    # Step 3b: Exclude specified target values
+    if config.exclude_target_values:
+        initial_count = len(df_subset)
+        df_subset = df_subset[~df_subset[target_col].isin(config.exclude_target_values)]
+        excluded_count = initial_count - len(df_subset)
+        print(f"Excluded {excluded_count} rows with target values: {config.exclude_target_values}")
 
     # Step 4: Handle missing values in features
     df_subset = _fill_missing_values(df_subset, config)

@@ -41,6 +41,17 @@ def _strip_thousands_separators(
     return dataframe
 
 
+def _fix_decimal_separators(
+    dataframe: pd.DataFrame, columns: list[str]
+) -> pd.DataFrame:
+    """Replace comma decimal separators with dots for numeric conversion."""
+    for col in columns:
+        if col in dataframe.columns:
+            # Replace comma with dot for decimal values
+            dataframe[col] = dataframe[col].replace(r",", ".", regex=True)
+    return dataframe
+
+
 def get_traffic_crashes():
     dataframe = _load_and_validate(TRAFFIC_CRASHES_CSV)
     dataframe = _strip_thousands_separators(dataframe, ["LANE_CNT"])
@@ -49,6 +60,11 @@ def get_traffic_crashes():
 
 def get_crash_people():
     dataframe = _load_and_validate(TRAFFIC_CRASHES_PEOPLE_CSV)
+    # Fix column name with space instead of underscore
+    if "BAC_RESULT VALUE" in dataframe.columns:
+        dataframe = dataframe.rename(columns={"BAC_RESULT VALUE": "BAC_RESULT_VALUE"})
+    # Fix decimal separator (comma -> dot) for BAC values
+    dataframe = _fix_decimal_separators(dataframe, ["BAC_RESULT_VALUE"])
     return TrafficCrashesPeopleSchema.validate(dataframe)
 
 
@@ -68,3 +84,18 @@ def get_weather_stations():
         dataframe, ["Total Rain", "Solar Radiation"]
     )
     return WeatherStationsSchema.validate(dataframe)
+
+
+def get_crash_with_people():
+    """Load crash data merged with aggregated people features.
+
+    Returns crash data enriched with person-derived features for fatality
+    prediction. Features include safety equipment usage, alcohol involvement,
+    age risk indicators, and occupant counts.
+
+    Returns:
+        DataFrame with crash + people-derived features.
+    """
+    from data_preparation.merge_crash_with_people import get_crash_with_people_features
+
+    return get_crash_with_people_features()

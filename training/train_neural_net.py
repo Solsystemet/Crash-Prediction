@@ -5,15 +5,63 @@ This module provides functions for training and evaluating the MLP model.
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch.optim import Adam
-from torch.utils.data import DataLoader
+from torch.optim.lr_scheduler import ReduceLROnPlateau
+from torch.utils.data import DataLoader, WeightedRandomSampler
 
 from data_preparation.tensor_dataset import CrashTensorDataset
 from training.models import CrashPredictionMLP
+
+
+class FocalLoss(nn.Module):
+    """Focal Loss for handling class imbalance.
+
+    Focal loss down-weights easy examples and focuses on hard ones.
+    FL(p_t) = -alpha_t * (1 - p_t)^gamma * log(p_t)
+
+    Args:
+        alpha: Class weights tensor. If None, no class weighting is applied.
+        gamma: Focusing parameter. Higher values focus more on hard examples.
+            gamma=0 is equivalent to CrossEntropyLoss.
+        reduction: How to reduce the loss ('mean', 'sum', or 'none').
+    """
+
+    def __init__(
+        self,
+        alpha: torch.Tensor | None = None,
+        gamma: float = 2.0,
+        reduction: Literal["mean", "sum", "none"] = "mean",
+    ) -> None:
+        super().__init__()
+        self.alpha = alpha
+        self.gamma = gamma
+        self.reduction = reduction
+
+    def forward(self, inputs: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        """Compute focal loss.
+
+        Args:
+            inputs: Predicted logits of shape (N, C).
+            targets: Ground truth labels of shape (N,).
+
+        Returns:
+            Focal loss value.
+        """
+        ce_loss = F.cross_entropy(inputs, targets, weight=self.alpha, reduction="none")
+        pt = torch.exp(-ce_loss)  # Probability of correct class
+        focal_loss = ((1 - pt) ** self.gamma) * ce_loss
+
+        if self.reduction == "mean":
+            return focal_loss.mean()
+        elif self.reduction == "sum":
+            return focal_loss.sum()
+        return focal_loss
 
 
 @dataclass
@@ -26,13 +74,27 @@ class TrainingConfig:
         early_stopping_patience: Stop if val loss doesn't improve for this many epochs.
         device: Device to train on ("cuda" or "cpu").
         use_class_weights: Whether to use class weights to handle imbalance.
+        loss_type: Type of loss function ("cross_entropy" or "focal").
+        focal_gamma: Gamma parameter for focal loss (only used if loss_type="focal").
+        use_lr_scheduler: Whether to use ReduceLROnPlateau scheduler.
+        lr_scheduler_factor: Factor to reduce LR by when plateau detected.
+        lr_scheduler_patience: Epochs to wait before reducing LR.
+        min_lr: Minimum learning rate (scheduler won't reduce below this).
+        gradient_clip_norm: Max norm for gradient clipping. None to disable.
     """
 
-    epochs: int = 30
-    learning_rate: float = 1e-3
-    early_stopping_patience: int = 5
+    epochs: int = 100
+    learning_rate: float = 5e-4
+    early_stopping_patience: int = 15
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
     use_class_weights: bool = True
+    loss_type: Literal["cross_entropy", "focal"] = "focal"
+    focal_gamma: float = 1.0
+    use_lr_scheduler: bool = True
+    lr_scheduler_factor: float = 0.5
+    lr_scheduler_patience: int = 5
+    min_lr: float = 1e-6
+    gradient_clip_norm: float | None = 1.0
 
 
 @dataclass
@@ -67,8 +129,9 @@ def compute_class_weights(dataset: CrashTensorDataset, num_classes: int) -> torc
     labels = dataset.labels.numpy()
     classes, counts = np.unique(labels, return_counts=True)
     
-    # Inverse frequency weighting
-    weights = 1.0 / counts
+    # Sqrt of inverse frequency for softer weighting
+    # (pure inverse frequency causes over-correction when combined with focal loss)
+    weights = 1.0 / np.sqrt(counts)
     # Normalize so weights sum to num_classes present in data
     weights = weights / weights.sum() * len(classes)
     
@@ -80,6 +143,34 @@ def compute_class_weights(dataset: CrashTensorDataset, num_classes: int) -> torc
             full_weights[cls] = weight
     
     return torch.FloatTensor(full_weights)
+
+
+def create_weighted_sampler(dataset: CrashTensorDataset) -> WeightedRandomSampler:
+    """Create a WeightedRandomSampler for balanced batch sampling.
+
+    This ensures each batch contains a balanced representation of all classes,
+    which is critical for handling severe class imbalance (e.g., rare FATAL crashes).
+
+    Args:
+        dataset: Dataset to create sampler for.
+
+    Returns:
+        WeightedRandomSampler that oversamples minority classes.
+    """
+    labels = dataset.labels.numpy()
+    class_counts = np.bincount(labels)
+
+    # Weight for each class (inverse frequency)
+    class_weights = 1.0 / class_counts
+
+    # Weight for each sample based on its class
+    sample_weights = class_weights[labels]
+
+    return WeightedRandomSampler(
+        weights=sample_weights,
+        num_samples=len(sample_weights),
+        replacement=True,
+    )
 
 
 def train_neural_network(
@@ -123,8 +214,26 @@ def train_neural_network(
         if verbose:
             print(f"Using class weights: {class_weights.cpu().numpy().round(2)}")
 
-    criterion = nn.CrossEntropyLoss(weight=class_weights)
+    # Select loss function
+    if config.loss_type == "focal":
+        criterion = FocalLoss(alpha=class_weights, gamma=config.focal_gamma)
+        if verbose:
+            print(f"Using Focal Loss (gamma={config.focal_gamma})")
+    else:
+        criterion = nn.CrossEntropyLoss(weight=class_weights)
+
     optimizer = Adam(model.parameters(), lr=config.learning_rate)
+
+    # Learning rate scheduler
+    scheduler = None
+    if config.use_lr_scheduler:
+        scheduler = ReduceLROnPlateau(
+            optimizer,
+            mode="min",
+            factor=config.lr_scheduler_factor,
+            patience=config.lr_scheduler_patience,
+            min_lr=config.min_lr,
+        )
 
     # Training history
     history = TrainingHistory(
@@ -160,6 +269,11 @@ def train_neural_network(
             outputs = model(features)
             loss = criterion(outputs, labels)
             loss.backward()
+
+            # Gradient clipping to prevent exploding gradients
+            if config.gradient_clip_norm is not None:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), config.gradient_clip_norm)
+
             optimizer.step()
 
             train_loss += loss.item() * features.size(0)
@@ -191,6 +305,10 @@ def train_neural_network(
 
         val_loss /= val_total
         val_acc = val_correct / val_total
+
+        # Step LR scheduler
+        if scheduler is not None:
+            scheduler.step(val_loss)
 
         # Record history
         history.train_losses.append(train_loss)

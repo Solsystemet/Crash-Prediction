@@ -26,6 +26,8 @@ class TensorConfig:
         random_seed: Seed for reproducible train/val/test splits.
         fill_categorical_na: Value to fill missing categorical values.
         fill_numerical_na: Strategy for missing numerical values ("median" or "mean").
+        exclude_target_values: List of target values to exclude from training.
+            Rows with these target values are filtered out before processing.
     """
 
     target_column: str
@@ -39,6 +41,7 @@ class TensorConfig:
     random_seed: int = 42
     fill_categorical_na: str = "UNKNOWN"
     fill_numerical_na: Literal["median", "mean"] = "median"
+    exclude_target_values: list[str] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         """Validate configuration after initialization."""
@@ -65,11 +68,18 @@ _CATEGORICAL_COLS = [
     "LIGHTING_CONDITION",
     "ROADWAY_SURFACE_COND",
     "ROAD_DEFECT",
+    "FIRST_CRASH_TYPE",
+    "TRAFFICWAY_TYPE",
+    "ALIGNMENT",
+    "PRIM_CONTRIBUTORY_CAUSE",
+    "DAMAGE",
+    "INTERSECTION_RELATED_I",
 ]
 
 _NUMERICAL_COLS = [
     "POSTED_SPEED_LIMIT",
     "LANE_CNT",
+    "NUM_UNITS",
     "CRASH_HOUR",
     "CRASH_DAY_OF_WEEK",
     "CRASH_MONTH",
@@ -97,6 +107,7 @@ SEVERITY_PREDICTION_CONFIG = TensorConfig(
     val_ratio=0.15,
     test_ratio=0.15,
     random_seed=42,
+    exclude_target_values=["NO INDICATION OF INJURY"],
 )
 """Predict crash severity (MOST_SEVERE_INJURY) from road/weather/time conditions."""
 
@@ -128,3 +139,55 @@ MINIMAL_TEST_CONFIG = TensorConfig(
     random_seed=42,
 )
 """Minimal config with just 3 features for quick testing."""
+
+
+# =============================================================================
+# People-Enhanced Fatality Prediction
+# =============================================================================
+
+# New features derived from people data aggregation
+_PEOPLE_CATEGORICAL_COLS = [
+    "has_unbelted",
+    "has_alcohol",
+    "has_elderly",
+    "has_young_driver",
+    "has_cellphone_use",
+]
+
+_PEOPLE_NUMERICAL_COLS = [
+    "num_occupants",
+    "num_pedestrians",
+    "num_cyclists",
+    "num_drivers",
+    "age_min",
+    "age_max",
+    "age_mean",
+]
+
+# Combined feature lists for fatality prediction
+_FATALITY_CATEGORICAL_COLS = _CATEGORICAL_COLS + _PEOPLE_CATEGORICAL_COLS
+_FATALITY_NUMERICAL_COLS = _NUMERICAL_COLS + _PEOPLE_NUMERICAL_COLS
+
+
+FATALITY_PREDICTION_CONFIG = TensorConfig(
+    target_column="has_fatality",
+    feature_columns=_FATALITY_CATEGORICAL_COLS + _FATALITY_NUMERICAL_COLS,
+    categorical_columns=_FATALITY_CATEGORICAL_COLS,
+    numerical_columns=_FATALITY_NUMERICAL_COLS,
+    task_type="classification",
+    train_ratio=0.7,
+    val_ratio=0.15,
+    test_ratio=0.15,
+    random_seed=42,
+    fill_categorical_na="UNKNOWN",
+    fill_numerical_na="median",
+)
+"""Binary fatality prediction using crash + people-derived features.
+
+Uses merged crash/people data from merge_crash_with_people.py.
+Target: has_fatality (1 if any person died, 0 otherwise).
+
+New features from people data:
+- Risk indicators: has_unbelted, has_alcohol, has_elderly, has_young_driver
+- Demographics: num_occupants, num_pedestrians, age statistics
+"""

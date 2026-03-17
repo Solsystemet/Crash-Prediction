@@ -1,6 +1,6 @@
-"""Training entry point: train and compare Neural Network vs Random Forest.
+"""Training entry point for fatality prediction with people data.
 
-Run with: python -m training.main
+Run with: python -m training.train_fatality
 """
 
 import sys
@@ -9,9 +9,9 @@ from pathlib import Path
 from torch.utils.data import DataLoader
 
 from data_preparation.data_prepper import prepare_data
-from data_preparation.tensor_config import SEVERITY_PREDICTION_CONFIG
+from data_preparation.merge_crash_with_people import get_crash_with_people_features
+from data_preparation.tensor_config import FATALITY_PREDICTION_CONFIG
 from training.evaluation import (
-    EvaluationMetrics,
     compare_models,
     evaluate_neural_network,
     evaluate_random_forest,
@@ -35,32 +35,49 @@ MODELS_DIR = Path(__file__).resolve().parent.parent / "models" / "trained"
 
 
 def main() -> None:
-    """Train both models, compare on validation, evaluate winner on test."""
+    """Train fatality prediction models using crash + people data."""
     print("=" * 60)
-    print("Crash Severity Prediction - Model Training")
+    print("Fatality Prediction - Model Training")
     print("=" * 60)
 
     # =========================================================================
-    # Step 1: Prepare Data
+    # Step 1: Prepare Merged Data
     # =========================================================================
-    print("\n[1/5] Loading data...")
-    result = prepare_data(config=SEVERITY_PREDICTION_CONFIG, use_cache=True)
+    print("\n[1/5] Loading and merging crash + people data...")
+    
+    # Get merged crash + people data
+    merged_df = get_crash_with_people_features()
+    
+    # Prepare tensors using fatality config
+    result = prepare_data(
+        config=FATALITY_PREDICTION_CONFIG,
+        df=merged_df,
+        use_cache=False,  # Don't cache merged data (it's dynamically generated)
+        cache_name="fatality_pipeline",
+    )
 
-    print(f"  Train: {len(result.train_dataset):,} samples")
+    print(f"\n  Train: {len(result.train_dataset):,} samples")
     print(f"  Val:   {len(result.val_dataset):,} samples")
     print(f"  Test:  {len(result.test_dataset):,} samples")
     print(f"  Features: {result.train_dataset.num_features}")
     print(f"  Classes: {result.encoder_registry.get_num_classes()}")
+    
+    # Show class distribution (important for imbalanced data)
+    train_labels = result.train_dataset.labels.numpy()
+    fatal_count = (train_labels == 1).sum()
+    non_fatal_count = (train_labels == 0).sum()
+    print(f"\n  Class distribution (train):")
+    print(f"    Non-fatal (0): {non_fatal_count:,} ({non_fatal_count/len(train_labels)*100:.2f}%)")
+    print(f"    Fatal (1):     {fatal_count:,} ({fatal_count/len(train_labels)*100:.2f}%)")
     sys.stdout.flush()
 
-    # Create DataLoaders for neural network
-    # Use WeightedRandomSampler for balanced batch sampling
+    # Create DataLoaders with weighted sampling for class imbalance
     train_sampler = create_weighted_sampler(result.train_dataset)
 
     train_loader = DataLoader(
         result.train_dataset,
         batch_size=256,
-        sampler=train_sampler,  # Balanced sampling instead of shuffle
+        sampler=train_sampler,
     )
     val_loader = DataLoader(
         result.val_dataset,
@@ -72,12 +89,14 @@ def main() -> None:
     # Step 2: Train Neural Network
     # =========================================================================
     print("\n[2/5] Training Neural Network...")
+    
+    # Config optimized for imbalanced binary classification
     nn_config = TrainingConfig(
         epochs=100,
-        learning_rate=5e-4,
-        early_stopping_patience=15,
-        use_class_weights=False,
-        loss_type="cross_entropy",
+        learning_rate=1e-3,
+        early_stopping_patience=20,
+        use_class_weights=True,  # Critical for rare fatal class
+        loss_type="focal",       # Better for class imbalance
         use_lr_scheduler=True,
         gradient_clip_norm=1.0,
     )
@@ -96,9 +115,11 @@ def main() -> None:
     # Step 3: Train Random Forest
     # =========================================================================
     print("\n[3/5] Training Random Forest...")
+    
     rf_config = RandomForestConfig(
-        n_estimators=100,
-        max_depth=15,
+        n_estimators=200,
+        max_depth=20,
+        class_weight="balanced",  # Handle imbalance in RF too
     )
 
     rf_model = train_random_forest(
@@ -131,10 +152,7 @@ def main() -> None:
     # =========================================================================
     print("\n[5/5] Final evaluation on test set...")
 
-    # Get class names for detailed report
-    class_names = None
-    if result.encoder_registry.target_encoder is not None:
-        class_names = list(result.encoder_registry.target_encoder.classes_)
+    class_names = ["Non-Fatal", "Fatal"]
 
     if winner == "neural_network":
         test_metrics = evaluate_neural_network(
@@ -145,10 +163,9 @@ def main() -> None:
         print_metrics(test_metrics, title="Neural Network - Test Set Results")
         print_classification_report_full(test_metrics, class_names=class_names)
 
-        # Save winning model
         MODELS_DIR.mkdir(parents=True, exist_ok=True)
-        save_nn_model(nn_model, MODELS_DIR / "neural_network.pt")
-        print(f"\nModel saved to: {MODELS_DIR / 'neural_network.pt'}")
+        save_nn_model(nn_model, MODELS_DIR / "fatality_neural_network.pt")
+        print(f"\nModel saved to: {MODELS_DIR / 'fatality_neural_network.pt'}")
 
     else:
         test_metrics = evaluate_random_forest(
@@ -158,13 +175,12 @@ def main() -> None:
         print_metrics(test_metrics, title="Random Forest - Test Set Results")
         print_classification_report_full(test_metrics, class_names=class_names)
 
-        # Save winning model
         MODELS_DIR.mkdir(parents=True, exist_ok=True)
-        save_random_forest(rf_model, MODELS_DIR / "random_forest.joblib")
-        print(f"\nModel saved to: {MODELS_DIR / 'random_forest.joblib'}")
+        save_random_forest(rf_model, MODELS_DIR / "fatality_random_forest.joblib")
+        print(f"\nModel saved to: {MODELS_DIR / 'fatality_random_forest.joblib'}")
 
     print("\n" + "=" * 60)
-    print("Training complete!")
+    print("Fatality prediction training complete!")
     print("=" * 60)
     sys.stdout.flush()
 

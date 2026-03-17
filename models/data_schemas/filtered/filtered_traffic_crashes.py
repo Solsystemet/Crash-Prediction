@@ -32,12 +32,23 @@ class FilteredTrafficCrashesSchema(pa.DataFrameModel):
     DEVICE_CONDITION: Series[str] = pa.Field()
     WEATHER_CONDITION: Series[str] = pa.Field()
     LIGHTING_CONDITION: Series[str] = pa.Field()
+    FIRST_CRASH_TYPE: Series[str] = pa.Field()
+    TRAFFICWAY_TYPE: Series[str] = pa.Field()
     LANE_CNT: Series[float] = pa.Field(
         nullable=True,
         ge=0,
     )
+    ALIGNMENT: Series[str] = pa.Field()
     ROADWAY_SURFACE_COND: Series[str] = pa.Field()
     ROAD_DEFECT: Series[str] = pa.Field()
+    INTERSECTION_RELATED_I: Series[str] = pa.Field(
+        nullable=True,
+    )
+    DAMAGE: Series[str] = pa.Field()
+    PRIM_CONTRIBUTORY_CAUSE: Series[str] = pa.Field()
+    NUM_UNITS: Series[int] = pa.Field(
+        ge=1,
+    )
     MOST_SEVERE_INJURY: Series[str] = pa.Field(
         nullable=True,
     )
