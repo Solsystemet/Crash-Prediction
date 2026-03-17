@@ -4,7 +4,9 @@ import torch
 from models.data_schemas.full.traffic_crashes import TrafficCrashesSchema
 
 
-def k_means(data: pd.DataFrame, centroids_count: int, num_iterations: int):
+def k_means(
+    data: pd.DataFrame, centroids_count: int, num_iterations: int
+) -> tuple[torch.Tensor, torch.Tensor]:
     """
     Perform K-means clustering on geographic data using latitude/longitude.
 
