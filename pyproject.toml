@@ -15,6 +15,7 @@ dependencies = [
     "pandas-stubs>=3.0.0.260204",
     "pandera>=0.29.0",
     "requests>=2.32.5",
+    "scikit-learn>=1.8.0",
     "torch>=2.10.0",
     "torchvision>=0.25.0",
 ]
