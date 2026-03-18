@@ -8,6 +8,7 @@ from typing import Protocol
 
 import numpy as np
 import torch
+import xgboost as xgb
 from numpy.typing import NDArray
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import (
@@ -88,6 +89,28 @@ def evaluate_random_forest(
     X = dataset.features.numpy()
     true_labels = dataset.labels.numpy()
     predictions = model.predict(X)
+
+    return _compute_metrics(predictions, true_labels)
+
+
+def evaluate_gradient_boosted_trees(
+    model: xgb.Booster,
+    dataset: CrashTensorDataset,
+) -> EvaluationMetrics:
+    """Evaluate a Gradient Boosted Trees model on a dataset.
+
+    Args:
+        model: Trained XGBoost model.
+        dataset: Dataset to evaluate on.
+
+    Returns:
+        EvaluationMetrics containing results.
+    """
+    X = dataset.features.numpy()
+    true_labels = dataset.labels.numpy()
+    dmatrix = xgb.DMatrix(X, enable_categorical=True)
+    predictions = model.predict(dmatrix)
+    predictions = np.round(predictions).astype(np.int64)
 
     return _compute_metrics(predictions, true_labels)
 
