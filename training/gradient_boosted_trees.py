@@ -1,8 +1,11 @@
 from dataclasses import dataclass
+from pathlib import Path
 from torch.utils.data import DataLoader
 import numpy as np
 import xgboost as xgb
 from sklearn.metrics import accuracy_score
+
+from data_preparation.tensor_dataset import CrashTensorDataset
 
 
 @dataclass
@@ -16,8 +19,11 @@ class GradientBoostingConfig:
 def train_gradient_boosted_trees(
     train_loader: DataLoader,
     val_loader: DataLoader,
+    num_features: int,
+    num_classes: int,
     config: GradientBoostingConfig | None = None,
     verbose: bool = True,
+    train_dataset: CrashTensorDataset | None = None,  # noqa: F821
 ):
     if config is None:
         config = GradientBoostingConfig()
