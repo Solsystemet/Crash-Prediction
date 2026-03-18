@@ -10,10 +10,31 @@ from data_preparation.tensor_dataset import CrashTensorDataset
 
 @dataclass
 class GradientBoostingConfig:
-    objective: str = "binary:logistic"
+    objective: str = "multi:softmax"
     max_depth: int = 3
     learning_rate: float = 0.1
     n: int = 50
+    base_score: float = 0.5
+    num_class: int | None = None  # Set automatically based on num_classes
+
+    def to_xgboost_params(self, num_classes: int) -> dict:
+        """Convert config to XGBoost parameters, excluding training-specific fields.
+
+        Args:
+            num_classes: Number of classes for multi-class classification.
+        """
+        params = {
+            "objective": self.objective,
+            "max_depth": self.max_depth,
+            "learning_rate": self.learning_rate,
+            "base_score": self.base_score,
+        }
+
+        # Add num_class for multi-class objectives
+        if "multi:" in self.objective:
+            params["num_class"] = num_classes
+
+        return params
 
 
 def train_gradient_boosted_trees(
@@ -37,10 +58,16 @@ def train_gradient_boosted_trees(
         val_features.numpy(), label=val_labels.numpy(), enable_categorical=True
     )
     model = xgb.train(
-        params=config.__dict__, dtrain=train_data, num_boost_round=config.n
+        params=config.to_xgboost_params(num_classes),
+        dtrain=train_data,
+        num_boost_round=config.n,
     )
     preds = model.predict(val_data)
-    preds = np.round(preds)
+
+    if "softprob" in config.objective:
+        preds = preds.argmax(axis=1)
+
+    preds = preds.astype(np.int64)
     accuracy = accuracy_score(val_labels.numpy(), preds)
 
     if verbose:

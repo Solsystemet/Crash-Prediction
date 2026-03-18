@@ -62,7 +62,7 @@ def main() -> None:
     # =========================================================================
     print("\n[2/4] Training Gradient Boosted Trees...")
     gbt_config = GradientBoostingConfig(
-        objective="binary:logistic",
+        objective="multi:softmax",
         max_depth=6,
         learning_rate=0.1,
         n=100,

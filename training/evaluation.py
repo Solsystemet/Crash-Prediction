@@ -110,7 +110,13 @@ def evaluate_gradient_boosted_trees(
     true_labels = dataset.labels.numpy()
     dmatrix = xgb.DMatrix(X, enable_categorical=True)
     predictions = model.predict(dmatrix)
-    predictions = np.round(predictions).astype(np.int64)
+    
+    # Handle both softmax (returns class labels) and softprob (returns probabilities)
+    if len(predictions.shape) > 1:
+        # softprob returns probabilities, take argmax
+        predictions = predictions.argmax(axis=1)
+    
+    predictions = predictions.astype(np.int64)
 
     return _compute_metrics(predictions, true_labels)
 
