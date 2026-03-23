@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 from pathlib import Path
-from sklearn.utils import compute_sample_weight
+from imblearn.over_sampling import SMOTE
 from torch.utils.data import DataLoader
 import torch
 import numpy as np
@@ -18,7 +18,6 @@ class GradientBoostingConfig:
     n: int = 50
     base_score: float = 0.5
     num_class: int | None = None  # Set automatically based on num_classes
-    class_weight: str | None = "balanced"
     early_stopping_rounds: int | None = 20
     eval_metric: str | None = None
     seed: int = 42
@@ -82,19 +81,15 @@ def train_gradient_boosted_trees(
     X_train, y_train = loader_to_numpy(train_loader)
     X_val, y_val = loader_to_numpy(val_loader)
 
-    y_train = y_train.astype(np.int64, copy=False)
+    smote = SMOTE(sampling_strategy="auto", random_state=42)
+    X_train_sm, y_train_sm = smote.fit_resample(X_train, y_train)
+
+    y_train_sm = y_train_sm.astype(np.int64, copy=False)
     y_val = y_val.astype(np.int64, copy=False)
 
-    sample_weights: np.ndarray | None = None
-    sample_weights = compute_sample_weight(
-        class_weight=config.class_weight,
-        y=y_train,
-    ).astype(np.float32, copy=False)
-
     train_data = xgb.DMatrix(
-        X_train,
-        label=y_train,
-        weight=sample_weights,
+        X_train_sm,
+        label=y_train_sm,
         enable_categorical=True,
     )
     val_data = xgb.DMatrix(X_val, label=y_val, enable_categorical=True)

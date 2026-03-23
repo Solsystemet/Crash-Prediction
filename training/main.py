@@ -48,7 +48,7 @@ def main() -> None:
     # Create DataLoaders
     train_loader = DataLoader(
         result.train_dataset,
-        batch_size=len(result.train_dataset),  # Load all data at once for XGBoost
+        batch_size=len(result.train_dataset),
         shuffle=True,
     )
     val_loader = DataLoader(
@@ -70,7 +70,6 @@ def main() -> None:
         learning_rate=0.05,
         n=2000,
         early_stopping_rounds=50,
-        class_weight="balanced",
     )
 
     gbt_model, train_accuracy = train_gradient_boosted_trees(
