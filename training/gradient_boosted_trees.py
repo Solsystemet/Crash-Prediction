@@ -19,8 +19,17 @@ class GradientBoostingConfig:
     base_score: float = 0.5
     num_class: int | None = None  # Set automatically based on num_classes
     class_weight: str | None = "balanced"
+    class_weight_clip: float | None = None
     early_stopping_rounds: int | None = 20
     eval_metric: str | None = None
+    subsample: float | None = None
+    colsample_bytree: float | None = None
+    min_child_weight: float | None = None
+    reg_alpha: float | None = None
+    reg_lambda: float | None = None
+    gamma: float | None = None
+    max_delta_step: float | None = None
+    tree_method: str | None = None
     seed: int = 42
 
     def to_xgboost_params(self, num_classes: int) -> dict:
@@ -36,6 +45,23 @@ class GradientBoostingConfig:
             "base_score": self.base_score,
             "seed": self.seed,
         }
+
+        if self.subsample is not None:
+            params["subsample"] = self.subsample
+        if self.colsample_bytree is not None:
+            params["colsample_bytree"] = self.colsample_bytree
+        if self.min_child_weight is not None:
+            params["min_child_weight"] = self.min_child_weight
+        if self.reg_alpha is not None:
+            params["reg_alpha"] = self.reg_alpha
+        if self.reg_lambda is not None:
+            params["reg_lambda"] = self.reg_lambda
+        if self.gamma is not None:
+            params["gamma"] = self.gamma
+        if self.max_delta_step is not None:
+            params["max_delta_step"] = self.max_delta_step
+        if self.tree_method is not None:
+            params["tree_method"] = self.tree_method
 
         # Add num_class for multi-class objectives
         if "multi:" in self.objective:
@@ -86,10 +112,20 @@ def train_gradient_boosted_trees(
     y_val = y_val.astype(np.int64, copy=False)
 
     sample_weights: np.ndarray | None = None
-    sample_weights = compute_sample_weight(
-        class_weight=config.class_weight,
-        y=y_train,
-    ).astype(np.float32, copy=False)
+    val_weights: np.ndarray | None = None
+    if config.class_weight is not None:
+        sample_weights = compute_sample_weight(
+            class_weight=config.class_weight,
+            y=y_train,
+        ).astype(np.float32, copy=False)
+        val_weights = compute_sample_weight(
+            class_weight=config.class_weight,
+            y=y_val,
+        ).astype(np.float32, copy=False)
+
+        if config.class_weight_clip is not None:
+            sample_weights = np.clip(sample_weights, 0.0, config.class_weight_clip)
+            val_weights = np.clip(val_weights, 0.0, config.class_weight_clip)
 
     train_data = xgb.DMatrix(
         X_train,
@@ -97,7 +133,12 @@ def train_gradient_boosted_trees(
         weight=sample_weights,
         enable_categorical=True,
     )
-    val_data = xgb.DMatrix(X_val, label=y_val, enable_categorical=True)
+    val_data = xgb.DMatrix(
+        X_val,
+        label=y_val,
+        weight=val_weights,
+        enable_categorical=True,
+    )
 
     evals = [(train_data, "train"), (val_data, "val")]
     model = xgb.train(
