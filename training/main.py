@@ -66,21 +66,11 @@ def main() -> None:
         # then argmax is used for class predictions during evaluation.
         objective="multi:softprob",
         eval_metric="mlogloss",
-        max_depth=4,
+        max_depth=6,
         learning_rate=0.05,
         n=2000,
-        early_stopping_rounds=100,
+        early_stopping_rounds=50,
         class_weight="balanced",
-        # "balanced" can yield extremely large weights for very rare classes
-        # (e.g. FATAL), which often destroys overall accuracy.
-        # Clipping keeps some rebalancing while preventing weight explosion.
-        class_weight_clip=20.0,
-        # Regularization/sampling for large datasets.
-        subsample=0.8,
-        colsample_bytree=0.8,
-        min_child_weight=5.0,
-        reg_lambda=1.0,
-        tree_method="hist",
     )
 
     gbt_model, train_accuracy = train_gradient_boosted_trees(
