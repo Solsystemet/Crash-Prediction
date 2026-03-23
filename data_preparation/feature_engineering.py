@@ -250,20 +250,22 @@ def add_binary_targets(
 ) -> pd.DataFrame:
     """Add binary target columns for hierarchical classification.
 
-    Creates two binary targets for two-stage classification:
+    Creates three binary targets for three-stage classification:
     - IS_INJURY: 1 if any injury occurred, 0 if "NO INDICATION OF INJURY"
-    - IS_SEVERE: 1 if FATAL or INCAPACITATING, 0 otherwise
+    - IS_SEVERE: 1 if FATAL or INCAPACITATING, 0 otherwise (among injuries)
+    - IS_REPORTED: 1 if REPORTED, NOT EVIDENT, 0 if NONINCAPACITATING (among minors)
 
     This enables hierarchical classification:
     - Level 1: Predict INJURY vs NO_INJURY (14% vs 86% - more balanced)
     - Level 2: For injury cases, predict SEVERE vs MINOR
+    - Level 3: For minor cases, predict REPORTED vs NONINCAPACITATING
 
     Args:
         df: DataFrame with severity column.
         severity_column: Name of the column containing severity labels.
 
     Returns:
-        DataFrame with IS_INJURY and IS_SEVERE columns added.
+        DataFrame with IS_INJURY, IS_SEVERE, and IS_REPORTED columns added.
     """
     df = df.copy()
 
@@ -281,6 +283,12 @@ def add_binary_targets(
     severe_patterns = ["FATAL", "INCAPACITATING INJURY", "INCAPACITATING_INJURY"]
     is_severe = severity.isin([p.upper() for p in severe_patterns])
     df["IS_SEVERE"] = is_severe.astype(int)
+
+    # IS_REPORTED: 1 if REPORTED, NOT EVIDENT, 0 if NONINCAPACITATING
+    # This distinguishes subtle injuries from visible ones
+    reported_patterns = ["REPORTED, NOT EVIDENT", "REPORTED_NOT_EVIDENT"]
+    is_reported = severity.isin([p.upper() for p in reported_patterns])
+    df["IS_REPORTED"] = is_reported.astype(int)
 
     return df
 
