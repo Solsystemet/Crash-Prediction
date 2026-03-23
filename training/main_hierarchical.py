@@ -70,6 +70,11 @@ class HierarchicalConfig:
     l2_model: Literal["rf", "xgb", "et"] = "xgb"
     l2_threshold: float = 0.2  # Lower threshold to catch more severe cases
 
+    # Level 3: Visible (NONINCAPACITATING) vs Reported (among minor injuries)
+    l3_sampling_strategy: float = 0.5  # Moderate oversampling
+    l3_model: Literal["rf", "xgb", "et"] = "xgb"
+    l3_threshold: float = 0.5  # Default threshold
+
     # Model hyperparameters
     n_estimators: int = 200
     max_depth: int = 15
@@ -250,6 +255,7 @@ def prepare_features(df: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
         # Binary targets
         "IS_INJURY",
         "IS_SEVERE",
+        "IS_REPORTED",  # L3 binary target
         "SEVERITY_LEVEL",
         "SEVERITY_ENCODED",  # Label-encoded MOST_SEVERE_INJURY
         # Geographic coordinates (use clusters instead)
@@ -278,25 +284,40 @@ def prepare_features(df: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
         "STREET_NAME",
     }
 
-    # Get numeric and encoded categorical columns
+    # Safe categorical features that are known BEFORE crash outcome
+    # These describe pre-crash conditions, not post-crash investigation results
+    safe_categorical_cols = [
+        "WEATHER_CONDITION",      # Weather at time of crash
+        "LIGHTING_CONDITION",     # Lighting at time of crash  
+        "FIRST_CRASH_TYPE",       # Type of collision (PEDESTRIAN, REAR END, etc.)
+        "TRAFFICWAY_TYPE",        # Road type
+        "ROADWAY_SURFACE_COND",   # Road surface condition
+        "TRAFFIC_CONTROL_DEVICE", # Traffic signals, signs
+        "DEVICE_CONDITION",       # Condition of traffic device
+        "ALIGNMENT",              # Road alignment (straight, curve)
+        "ROAD_DEFECT",            # Road defects
+        "PRIM_CONTRIBUTORY_CAUSE", # Primary cause (driver behavior)
+        "DAMAGE",                 # Property damage level
+    ]
+
+    # Get numeric columns
     feature_cols = []
     for col in df.columns:
         if col in exclude_cols:
             continue
         if df[col].dtype in ["int64", "float64", "int32", "float32"]:
             feature_cols.append(col)
-        elif df[col].dtype == "object":
-            # Skip categorical columns for now - they cause data leakage
-            # TODO: investigate which categorical features leak and add safe ones
-            pass
 
-    # Commented out categorical encoding due to data leakage
-    # For now, use only numeric features
-    # categorical_cols = df.select_dtypes(include=["object"]).columns
-    # categorical_cols = [c for c in categorical_cols if c not in exclude_cols]
-
-    # Create copy with only numeric features
+    # Create copy with numeric features
     df_features = df[feature_cols].copy()
+
+    # Add label-encoded safe categorical features
+    for col in safe_categorical_cols:
+        if col in df.columns and col not in exclude_cols:
+            le = LabelEncoder()
+            values = df[col].fillna("UNKNOWN").astype(str)
+            df_features[col] = le.fit_transform(values)
+            feature_cols.append(col)
 
     feature_cols = list(df_features.columns)
 
@@ -307,15 +328,17 @@ def prepare_features(df: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
 
 
 class HierarchicalClassifier:
-    """Two-stage hierarchical classifier for crash severity.
+    """Three-stage hierarchical classifier for crash severity.
 
     Level 1: Predicts INJURY vs NO_INJURY
     Level 2: For injury cases, predicts SEVERE vs NON_SEVERE
+    Level 3: For minor injury cases, predicts VISIBLE (NONINCAPACITATING) vs REPORTED
 
     Final mapping:
     - NO_INJURY predicted at L1 → NO INDICATION OF INJURY
-    - INJURY at L1, NON_SEVERE at L2 → NONINCAPACITATING INJURY
-    - INJURY at L1, SEVERE at L2 → INCAPACITATING INJURY (default) or FATAL (if very confident)
+    - INJURY at L1, SEVERE at L2 → INCAPACITATING INJURY (or FATAL if very confident)
+    - INJURY at L1, MINOR at L2, VISIBLE at L3 → NONINCAPACITATING INJURY
+    - INJURY at L1, MINOR at L2, REPORTED at L3 → REPORTED, NOT EVIDENT
     """
 
     def __init__(self, config: HierarchicalConfig):
@@ -327,8 +350,10 @@ class HierarchicalClassifier:
         self.config = config
         self.l1_model = None
         self.l2_model = None
+        self.l3_model = None
         self.l1_threshold = config.l1_threshold
         self.l2_threshold = config.l2_threshold
+        self.l3_threshold = config.l3_threshold
         self.feature_cols = None
 
     def fit(
@@ -336,13 +361,15 @@ class HierarchicalClassifier:
         X_train: np.ndarray,
         y_injury: np.ndarray,
         y_severe: np.ndarray,
+        y_reported: np.ndarray | None = None,
     ) -> "HierarchicalClassifier":
-        """Fit both levels of the hierarchical classifier.
+        """Fit all levels of the hierarchical classifier.
 
         Args:
             X_train: Feature matrix.
             y_injury: Binary labels (1=injury, 0=no injury).
             y_severe: Binary labels (1=severe, 0=not severe).
+            y_reported: Binary labels (1=reported, 0=nonincapacitating).
 
         Returns:
             Self.
@@ -412,6 +439,46 @@ class HierarchicalClassifier:
         logger.info(f"Training L2 model ({self.config.l2_model})...")
         self.l2_model.fit(X_l2, y_l2)
 
+        # Level 3: Train only on minor injury cases for reported vs visible
+        if y_reported is not None:
+            logger.info("=" * 60)
+            logger.info("LEVEL 3: Training REPORTED vs VISIBLE classifier")
+            logger.info("=" * 60)
+
+            # Minor injuries: injury=1 AND severe=0
+            minor_mask = (y_injury == 1) & (y_severe == 0)
+            X_minor = X_train[minor_mask]
+            y_reported_minor = y_reported[minor_mask]
+
+            # Now IS_REPORTED=1 means REPORTED, IS_REPORTED=0 means VISIBLE
+            n_reported = np.sum(y_reported_minor == 1)
+            n_visible = np.sum(y_reported_minor == 0)
+            l3_weight = n_visible / n_reported if n_reported > 0 else 1.0
+            logger.info(f"L3 Class distribution: VISIBLE={n_visible}, REPORTED={n_reported}")
+            logger.info(f"L3 Positive class weight: {l3_weight:.2f}")
+
+            if n_reported > 0 and n_visible > 0:
+                # Apply SMOTE
+                X_l3, y_l3 = apply_moderate_smote(
+                    X_minor,
+                    y_reported_minor,
+                    sampling_strategy=self.config.l3_sampling_strategy,
+                    random_state=self.config.random_state,
+                )
+
+                self.l3_model = create_model(
+                    self.config.l3_model,
+                    n_estimators=self.config.n_estimators,
+                    max_depth=self.config.max_depth,
+                    n_jobs=self.config.n_jobs,
+                    scale_pos_weight=l3_weight,
+                )
+
+                logger.info(f"Training L3 model ({self.config.l3_model})...")
+                self.l3_model.fit(X_l3, y_l3)
+            else:
+                logger.warning("Skipping L3 training - insufficient class samples")
+
         return self
 
     def optimize_thresholds(
@@ -419,8 +486,10 @@ class HierarchicalClassifier:
         X_val: np.ndarray,
         y_injury: np.ndarray,
         y_severe: np.ndarray,
+        y_reported: np.ndarray | None = None,
         l1_target_recall: float = 0.7,
         l2_target_recall: float = 0.5,
+        l3_target_recall: float = 0.5,
     ) -> None:
         """Optimize classification thresholds on validation data.
 
@@ -428,8 +497,10 @@ class HierarchicalClassifier:
             X_val: Validation feature matrix.
             y_injury: Binary injury labels.
             y_severe: Binary severity labels.
+            y_reported: Binary reported/nonincapacitating labels.
             l1_target_recall: Target recall for injury detection.
             l2_target_recall: Target recall for severity detection.
+            l3_target_recall: Target recall for reported detection.
         """
         logger.info("Optimizing classification thresholds...")
 
@@ -451,46 +522,68 @@ class HierarchicalClassifier:
             )
             logger.info(f"Optimized L2 threshold: {self.l2_threshold:.3f}")
 
-    def predict_proba(self, X: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        """Get probability predictions for both levels.
+        # L3 threshold optimization (on minor injury cases)
+        # Use minimum threshold of 0.35 to balance REPORTED vs NONINCAP
+        if self.l3_model is not None and y_reported is not None:
+            minor_mask = (y_injury == 1) & (y_severe == 0)
+            if np.sum(minor_mask) > 0:
+                X_val_minor = X_val[minor_mask]
+                y_val_reported = y_reported[minor_mask]
+                l3_proba = self.l3_model.predict_proba(X_val_minor)[:, 1]
+                optimal_threshold = find_optimal_threshold(
+                    y_val_reported, l3_proba, target_recall=l3_target_recall
+                )
+                # Apply minimum threshold to balance REPORTED vs NONINCAP
+                self.l3_threshold = max(optimal_threshold, 0.35)
+                logger.info(f"Optimized L3 threshold: {self.l3_threshold:.3f} (optimal was {optimal_threshold:.3f})")
+
+    def predict_proba(self, X: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Get probability predictions for all levels.
 
         Args:
             X: Feature matrix.
 
         Returns:
-            Tuple of (L1 probabilities, L2 probabilities).
+            Tuple of (L1 probabilities, L2 probabilities, L3 probabilities).
         """
         l1_proba = self.l1_model.predict_proba(X)[:, 1]
 
         # L2 prediction for all samples (will only use for predicted injuries)
         l2_proba = self.l2_model.predict_proba(X)[:, 1]
 
-        return l1_proba, l2_proba
+        # L3 prediction (if model exists)
+        if self.l3_model is not None:
+            l3_proba = self.l3_model.predict_proba(X)[:, 1]
+        else:
+            l3_proba = np.full(len(X), 0.5)  # Default to 50% if no L3 model
+
+        return l1_proba, l2_proba, l3_proba
 
     def predict_binary(
         self, X: np.ndarray
-    ) -> tuple[np.ndarray, np.ndarray]:
-        """Predict binary labels for both levels.
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Predict binary labels for all levels.
 
         Args:
             X: Feature matrix.
 
         Returns:
-            Tuple of (L1 predictions, L2 predictions).
+            Tuple of (L1 predictions, L2 predictions, L3 predictions).
         """
-        l1_proba, l2_proba = self.predict_proba(X)
+        l1_proba, l2_proba, l3_proba = self.predict_proba(X)
 
         l1_pred = (l1_proba >= self.l1_threshold).astype(int)
         l2_pred = (l2_proba >= self.l2_threshold).astype(int)
+        l3_pred = (l3_proba >= self.l3_threshold).astype(int)
 
-        return l1_pred, l2_pred
+        return l1_pred, l2_pred, l3_pred
 
     def predict_multiclass(
         self,
         X: np.ndarray,
         label_encoder: LabelEncoder | None = None,
     ) -> np.ndarray:
-        """Predict original 5-class severity labels.
+        """Predict original 5-class severity labels using 3-level hierarchy.
 
         LabelEncoder sorts alphabetically, so typical indices are:
         - 0: FATAL
@@ -502,9 +595,9 @@ class HierarchicalClassifier:
 
         Mapping from hierarchical to multiclass:
         - L1=0 (no injury) → NO INDICATION OF INJURY
-        - L1=1, L2=0 (injury, not severe) → NONINCAPACITATING INJURY
-        - L1=1, L2=1 (injury, severe) → INCAPACITATING INJURY
-        - Very high severity confidence → FATAL
+        - L1=1, L2=1 (injury, severe) → INCAPACITATING INJURY (or FATAL if top 6%)
+        - L1=1, L2=0, L3=1 (injury, minor, reported) → REPORTED, NOT EVIDENT
+        - L1=1, L2=0, L3=0 (injury, minor, visible) → NONINCAPACITATING INJURY
 
         Args:
             X: Feature matrix.
@@ -514,8 +607,8 @@ class HierarchicalClassifier:
         Returns:
             Array of multiclass predictions.
         """
-        l1_pred, l2_pred = self.predict_binary(X)
-        l1_proba, l2_proba = self.predict_proba(X)
+        l1_pred, l2_pred, l3_pred = self.predict_binary(X)
+        l1_proba, l2_proba, l3_proba = self.predict_proba(X)
 
         # Get class indices
         if label_encoder is not None:
@@ -524,33 +617,44 @@ class HierarchicalClassifier:
             idx_nonincapacitating = classes.index("NONINCAPACITATING INJURY") if "NONINCAPACITATING INJURY" in classes else 3
             idx_incapacitating = classes.index("INCAPACITATING INJURY") if "INCAPACITATING INJURY" in classes else 1
             idx_fatal = classes.index("FATAL") if "FATAL" in classes else 0
+            idx_reported = classes.index("REPORTED, NOT EVIDENT") if "REPORTED, NOT EVIDENT" in classes else 4
         else:
             # Alphabetical encoding (sklearn default)
             idx_fatal = 0
             idx_incapacitating = 1
             idx_no_indication = 2
             idx_nonincapacitating = 3
+            idx_reported = 4
 
         # Start with no injury
         multiclass = np.full(len(X), idx_no_indication, dtype=int)
 
-        # Injury cases: default to minor injury
+        # Level 1: Injury cases
         injury_mask = l1_pred == 1
-        multiclass[injury_mask] = idx_nonincapacitating
 
-        # Severe cases
+        # Level 2: Severe vs Minor (among injuries)
         severe_mask = injury_mask & (l2_pred == 1)
+        minor_mask = injury_mask & (l2_pred == 0)
+
+        # For severe cases: INCAPACITATING (default) or FATAL (top 6%)
         multiclass[severe_mask] = idx_incapacitating
 
         # FATAL: Use top percentile of severe cases based on probability
-        # FATAL is ~6% of severe cases (1094 FATAL vs 16804 INCAPACITATING)
-        # So we classify the top ~6% of severe predictions as FATAL
         if severe_mask.sum() > 0:
             severe_probas = l2_proba[severe_mask]
             # Use 94th percentile as threshold (top 6% → FATAL)
             fatal_threshold = np.percentile(severe_probas, 94)
             very_severe_mask = severe_mask & (l2_proba >= fatal_threshold)
             multiclass[very_severe_mask] = idx_fatal
+
+        # Level 3: Reported vs Visible (among minor injuries)
+        # IS_REPORTED=1 → L3=1 → REPORTED, NOT EVIDENT
+        # IS_REPORTED=0 → L3=0 → NONINCAPACITATING INJURY
+        reported_mask = minor_mask & (l3_pred == 1)  # REPORTED, NOT EVIDENT
+        visible_mask = minor_mask & (l3_pred == 0)   # NONINCAPACITATING
+
+        multiclass[reported_mask] = idx_reported
+        multiclass[visible_mask] = idx_nonincapacitating
 
         return multiclass
 
@@ -560,6 +664,7 @@ def evaluate_hierarchical(
     X_test: np.ndarray,
     y_injury: np.ndarray,
     y_severe: np.ndarray,
+    y_reported: np.ndarray,
     y_original: np.ndarray,
     label_encoder: LabelEncoder,
 ) -> dict:
@@ -570,6 +675,7 @@ def evaluate_hierarchical(
         X_test: Test feature matrix.
         y_injury: Binary injury labels.
         y_severe: Binary severity labels.
+        y_reported: Binary reported injury labels (REPORTED vs NONINCAP).
         y_original: Original 5-class labels.
         label_encoder: Encoder for original labels.
 
@@ -583,7 +689,7 @@ def evaluate_hierarchical(
     logger.info("LEVEL 1 EVALUATION: INJURY vs NO_INJURY")
     logger.info("=" * 60)
 
-    l1_pred, l2_pred = clf.predict_binary(X_test)
+    l1_pred, l2_pred, l3_pred = clf.predict_binary(X_test)
 
     l1_acc = accuracy_score(y_injury, l1_pred)
     l1_prec = precision_score(y_injury, l1_pred)
@@ -631,6 +737,37 @@ def evaluate_hierarchical(
 
         l2_cm = confusion_matrix(y_severe_test, l2_pred_injury)
         logger.info(f"\nL2 Confusion Matrix:\n{l2_cm}")
+
+    # Level 3 evaluation (on minor injury cases only)
+    logger.info("=" * 60)
+    logger.info("LEVEL 3 EVALUATION: REPORTED vs NONINCAP (minor injury cases)")
+    logger.info("=" * 60)
+
+    # Minor injury = injury + not severe
+    minor_mask = (y_injury == 1) & (y_severe == 0)
+    y_reported_test = y_reported[minor_mask]
+    l3_pred_minor = l3_pred[minor_mask]
+
+    if len(y_reported_test) > 0 and clf.l3_model is not None:
+        l3_acc = accuracy_score(y_reported_test, l3_pred_minor)
+        l3_prec = precision_score(y_reported_test, l3_pred_minor, zero_division=0)
+        l3_rec = recall_score(y_reported_test, l3_pred_minor, zero_division=0)
+        l3_f1 = f1_score(y_reported_test, l3_pred_minor, zero_division=0)
+
+        logger.info(f"L3 Accuracy:  {l3_acc:.4f}")
+        logger.info(f"L3 Precision: {l3_prec:.4f}")
+        logger.info(f"L3 Recall:    {l3_rec:.4f} (REPORTED detection)")
+        logger.info(f"L3 F1:        {l3_f1:.4f}")
+
+        results["l3_accuracy"] = l3_acc
+        results["l3_precision"] = l3_prec
+        results["l3_recall"] = l3_rec
+        results["l3_f1"] = l3_f1
+
+        l3_cm = confusion_matrix(y_reported_test, l3_pred_minor)
+        logger.info(f"\nL3 Confusion Matrix:\n{l3_cm}")
+    else:
+        logger.info("L3 model not trained or no minor injury cases in test set")
 
     # Multiclass evaluation
     logger.info("=" * 60)
@@ -733,6 +870,7 @@ def run_hierarchical_pipeline(config: HierarchicalConfig | None = None) -> dict:
     logger.info("\nTarget distributions:")
     logger.info(f"  IS_INJURY: {df['IS_INJURY'].value_counts().to_dict()}")
     logger.info(f"  IS_SEVERE: {df['IS_SEVERE'].value_counts().to_dict()}")
+    logger.info(f"  IS_REPORTED: {df['IS_REPORTED'].value_counts().to_dict()}")
     logger.info(f"  Original: {df['MOST_SEVERE_INJURY'].value_counts().to_dict()}")
 
     # Prepare features
@@ -744,6 +882,7 @@ def run_hierarchical_pipeline(config: HierarchicalConfig | None = None) -> dict:
     X = X_df.values
     y_injury = df["IS_INJURY"].values
     y_severe = df["IS_SEVERE"].values
+    y_reported = df["IS_REPORTED"].values
     y_original = df["SEVERITY_ENCODED"].values
 
     # Split data
@@ -755,12 +894,15 @@ def run_hierarchical_pipeline(config: HierarchicalConfig | None = None) -> dict:
         y_inj_test,
         y_sev_train,
         y_sev_test,
+        y_rep_train,
+        y_rep_test,
         y_orig_train,
         y_orig_test,
     ) = train_test_split(
         X,
         y_injury,
         y_severe,
+        y_reported,
         y_original,
         test_size=config.test_size,
         random_state=config.random_state,
@@ -778,10 +920,13 @@ def run_hierarchical_pipeline(config: HierarchicalConfig | None = None) -> dict:
         y_inj_val,
         y_sev_train_final,
         y_sev_val,
+        y_rep_train_final,
+        y_rep_val,
     ) = train_test_split(
         X_train,
         y_inj_train,
         y_sev_train,
+        y_rep_train,
         test_size=0.2,  # 20% of training data for validation
         random_state=config.random_state,
         stratify=y_inj_train,
@@ -793,7 +938,7 @@ def run_hierarchical_pipeline(config: HierarchicalConfig | None = None) -> dict:
     logger.info("\n[5/6] Training hierarchical classifier...")
     clf = HierarchicalClassifier(config)
     clf.feature_cols = feature_cols
-    clf.fit(X_train_final, y_inj_train_final, y_sev_train_final)
+    clf.fit(X_train_final, y_inj_train_final, y_sev_train_final, y_rep_train_final)
 
     # Optimize thresholds on VALIDATION set (not test set!)
     logger.info("\nOptimizing thresholds on validation set...")
@@ -801,8 +946,10 @@ def run_hierarchical_pipeline(config: HierarchicalConfig | None = None) -> dict:
         X_val,
         y_inj_val,
         y_sev_val,
+        y_rep_val,
         l1_target_recall=0.7,
         l2_target_recall=0.5,
+        l3_target_recall=0.35,  # Lower target for balanced REPORTED/NONINCAP
     )
 
     # Evaluate
@@ -812,6 +959,7 @@ def run_hierarchical_pipeline(config: HierarchicalConfig | None = None) -> dict:
         X_test,
         y_inj_test,
         y_sev_test,
+        y_rep_test,
         y_orig_test,
         label_encoder,
     )
