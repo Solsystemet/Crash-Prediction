@@ -62,10 +62,15 @@ def main() -> None:
     # =========================================================================
     print("\n[2/4] Training Gradient Boosted Trees...")
     gbt_config = GradientBoostingConfig(
-        objective="multi:softmax",
+        # Use probabilistic objective + log-loss for a smoother training signal,
+        # then argmax is used for class predictions during evaluation.
+        objective="multi:softprob",
+        eval_metric="mlogloss",
         max_depth=6,
-        learning_rate=0.1,
-        n=100,
+        learning_rate=0.05,
+        n=2000,
+        early_stopping_rounds=50,
+        class_weight="balanced",
     )
 
     gbt_model, train_accuracy = train_gradient_boosted_trees(
