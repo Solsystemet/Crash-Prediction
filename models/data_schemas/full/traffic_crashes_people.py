@@ -134,9 +134,11 @@ class TrafficCrashesPeopleSchema(pa.DataFrameModel):
     BAC_RESULT: Series[str] = pa.Field(
         nullable=True,
     )
+    # Note: Column name has space in original CSV
     BAC_RESULT_VALUE: Series[float] = pa.Field(
         nullable=True,
         ge=0.0,
+        alias="BAC_RESULT VALUE",
     )
 
     # Cell phone usage
