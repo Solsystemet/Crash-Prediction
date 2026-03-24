@@ -69,6 +69,13 @@ class HierarchicalConfig:
     l2_sampling_strategy: float = 0.7  # Higher oversampling for severity
     l2_model: Literal["rf", "xgb", "et"] = "xgb"
     l2_threshold: float = 0.2  # Lower threshold to catch more severe cases
+    l2_weight_multiplier: float = 1.5  # Amplify class weight to reduce false positives
+
+    # Level 2.5: Fatal vs Incapacitating (among severe cases)
+    l25_sampling_strategy: float = 0.8  # High oversampling for rare FATAL class
+    l25_model: Literal["rf", "xgb", "et"] = "xgb"
+    l25_threshold: float = 0.15  # Low threshold to catch more FATAL cases
+    l25_weight_multiplier: float = 3.0  # Extra weight for extremely rare FATAL
 
     # Level 3: Visible (NONINCAPACITATING) vs Reported (among minor injuries)
     l3_sampling_strategy: float = 0.5  # Moderate oversampling
@@ -226,6 +233,46 @@ def find_optimal_threshold(
     return best_threshold
 
 
+def find_optimal_threshold_f1(
+    y_true: np.ndarray,
+    y_proba: np.ndarray,
+    min_precision: float = 0.0,
+) -> float:
+    """Find threshold that maximizes F1 score with optional precision constraint.
+
+    This is an alternative to recall-based thresholding that balances
+    precision and recall more evenly.
+
+    Args:
+        y_true: True binary labels.
+        y_proba: Predicted probabilities for positive class.
+        min_precision: Minimum precision constraint (default 0 = no constraint).
+
+    Returns:
+        Optimal threshold value that maximizes F1.
+    """
+    precision, recall, thresholds = precision_recall_curve(y_true, y_proba)
+
+    best_f1 = 0.0
+    best_threshold = 0.5
+
+    for i in range(len(thresholds)):
+        p = precision[i]
+        r = recall[i]
+
+        # Skip if precision is below minimum constraint
+        if p < min_precision:
+            continue
+
+        if p + r > 0:
+            f1 = 2 * p * r / (p + r)
+            if f1 > best_f1:
+                best_f1 = f1
+                best_threshold = float(thresholds[i])
+
+    return best_threshold
+
+
 def prepare_features(df: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
     """Prepare feature matrix from DataFrame.
 
@@ -255,6 +302,7 @@ def prepare_features(df: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
         # Binary targets
         "IS_INJURY",
         "IS_SEVERE",
+        "IS_FATAL",  # L2.5 binary target
         "IS_REPORTED",  # L3 binary target
         "SEVERITY_LEVEL",
         "SEVERITY_ENCODED",  # Label-encoded MOST_SEVERE_INJURY
@@ -328,15 +376,17 @@ def prepare_features(df: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
 
 
 class HierarchicalClassifier:
-    """Three-stage hierarchical classifier for crash severity.
+    """Four-stage hierarchical classifier for crash severity.
 
     Level 1: Predicts INJURY vs NO_INJURY
     Level 2: For injury cases, predicts SEVERE vs NON_SEVERE
+    Level 2.5: For severe cases, predicts FATAL vs INCAPACITATING
     Level 3: For minor injury cases, predicts VISIBLE (NONINCAPACITATING) vs REPORTED
 
     Final mapping:
     - NO_INJURY predicted at L1 → NO INDICATION OF INJURY
-    - INJURY at L1, SEVERE at L2 → INCAPACITATING INJURY (or FATAL if very confident)
+    - INJURY at L1, SEVERE at L2, FATAL at L2.5 → FATAL
+    - INJURY at L1, SEVERE at L2, not FATAL at L2.5 → INCAPACITATING INJURY
     - INJURY at L1, MINOR at L2, VISIBLE at L3 → NONINCAPACITATING INJURY
     - INJURY at L1, MINOR at L2, REPORTED at L3 → REPORTED, NOT EVIDENT
     """
@@ -350,9 +400,11 @@ class HierarchicalClassifier:
         self.config = config
         self.l1_model = None
         self.l2_model = None
+        self.l25_model = None  # L2.5: FATAL vs INCAPACITATING
         self.l3_model = None
         self.l1_threshold = config.l1_threshold
         self.l2_threshold = config.l2_threshold
+        self.l25_threshold = config.l25_threshold
         self.l3_threshold = config.l3_threshold
         self.feature_cols = None
 
@@ -362,6 +414,7 @@ class HierarchicalClassifier:
         y_injury: np.ndarray,
         y_severe: np.ndarray,
         y_reported: np.ndarray | None = None,
+        y_fatal: np.ndarray | None = None,
     ) -> "HierarchicalClassifier":
         """Fit all levels of the hierarchical classifier.
 
@@ -370,6 +423,7 @@ class HierarchicalClassifier:
             y_injury: Binary labels (1=injury, 0=no injury).
             y_severe: Binary labels (1=severe, 0=not severe).
             y_reported: Binary labels (1=reported, 0=nonincapacitating).
+            y_fatal: Binary labels (1=fatal, 0=incapacitating).
 
         Returns:
             Self.
@@ -433,11 +487,50 @@ class HierarchicalClassifier:
             n_estimators=self.config.n_estimators,
             max_depth=self.config.max_depth,
             n_jobs=self.config.n_jobs,
-            scale_pos_weight=l2_weight,
+            scale_pos_weight=l2_weight * self.config.l2_weight_multiplier,
         )
 
         logger.info(f"Training L2 model ({self.config.l2_model})...")
         self.l2_model.fit(X_l2, y_l2)
+
+        # Level 2.5: Train only on severe cases for FATAL vs INCAPACITATING
+        if y_fatal is not None:
+            logger.info("=" * 60)
+            logger.info("LEVEL 2.5: Training FATAL vs INCAPACITATING classifier")
+            logger.info("=" * 60)
+
+            # Severe injuries: injury=1 AND severe=1
+            severe_mask = (y_injury == 1) & (y_severe == 1)
+            X_severe = X_train[severe_mask]
+            y_fatal_severe = y_fatal[severe_mask]
+
+            n_incap = np.sum(y_fatal_severe == 0)
+            n_fatal = np.sum(y_fatal_severe == 1)
+            l25_weight = n_incap / n_fatal if n_fatal > 0 else 1.0
+            logger.info(f"L2.5 Class distribution: INCAPACITATING={n_incap}, FATAL={n_fatal}")
+            logger.info(f"L2.5 Positive class weight: {l25_weight:.2f}")
+
+            if n_fatal > 0 and n_incap > 0:
+                # Apply SMOTE for FATAL detection
+                X_l25, y_l25 = apply_moderate_smote(
+                    X_severe,
+                    y_fatal_severe,
+                    sampling_strategy=self.config.l25_sampling_strategy,
+                    random_state=self.config.random_state,
+                )
+
+                self.l25_model = create_model(
+                    self.config.l25_model,
+                    n_estimators=self.config.n_estimators,
+                    max_depth=self.config.max_depth,
+                    n_jobs=self.config.n_jobs,
+                    scale_pos_weight=l25_weight * self.config.l25_weight_multiplier,
+                )
+
+                logger.info(f"Training L2.5 model ({self.config.l25_model})...")
+                self.l25_model.fit(X_l25, y_l25)
+            else:
+                logger.warning("Skipping L2.5 training - insufficient FATAL samples")
 
         # Level 3: Train only on minor injury cases for reported vs visible
         if y_reported is not None:
@@ -487,8 +580,10 @@ class HierarchicalClassifier:
         y_injury: np.ndarray,
         y_severe: np.ndarray,
         y_reported: np.ndarray | None = None,
+        y_fatal: np.ndarray | None = None,
         l1_target_recall: float = 0.7,
         l2_target_recall: float = 0.5,
+        l25_target_recall: float = 0.4,
         l3_target_recall: float = 0.5,
     ) -> None:
         """Optimize classification thresholds on validation data.
@@ -498,8 +593,10 @@ class HierarchicalClassifier:
             y_injury: Binary injury labels.
             y_severe: Binary severity labels.
             y_reported: Binary reported/nonincapacitating labels.
+            y_fatal: Binary fatal/incapacitating labels.
             l1_target_recall: Target recall for injury detection.
             l2_target_recall: Target recall for severity detection.
+            l25_target_recall: Target recall for FATAL detection.
             l3_target_recall: Target recall for reported detection.
         """
         logger.info("Optimizing classification thresholds...")
@@ -512,15 +609,29 @@ class HierarchicalClassifier:
         logger.info(f"Optimized L1 threshold: {self.l1_threshold:.3f}")
 
         # L2 threshold optimization (on injury cases)
+        # Use F1-based optimization with minimum precision constraint
         injury_mask = y_injury == 1
         if np.sum(injury_mask) > 0:
             X_val_injury = X_val[injury_mask]
             y_val_severe = y_severe[injury_mask]
             l2_proba = self.l2_model.predict_proba(X_val_injury)[:, 1]
-            self.l2_threshold = find_optimal_threshold(
-                y_val_severe, l2_proba, target_recall=l2_target_recall
+            # Use F1 optimization with precision constraint to reduce false positives
+            self.l2_threshold = find_optimal_threshold_f1(
+                y_val_severe, l2_proba, min_precision=0.15
             )
-            logger.info(f"Optimized L2 threshold: {self.l2_threshold:.3f}")
+            logger.info(f"Optimized L2 threshold (F1-based): {self.l2_threshold:.3f}")
+
+        # L2.5 threshold optimization (on severe cases)
+        if self.l25_model is not None and y_fatal is not None:
+            severe_mask = (y_injury == 1) & (y_severe == 1)
+            if np.sum(severe_mask) > 0:
+                X_val_severe = X_val[severe_mask]
+                y_val_fatal = y_fatal[severe_mask]
+                l25_proba = self.l25_model.predict_proba(X_val_severe)[:, 1]
+                self.l25_threshold = find_optimal_threshold(
+                    y_val_fatal, l25_proba, target_recall=l25_target_recall
+                )
+                logger.info(f"Optimized L2.5 threshold: {self.l25_threshold:.3f}")
 
         # L3 threshold optimization (on minor injury cases)
         # Use minimum threshold of 0.35 to balance REPORTED vs NONINCAP
@@ -537,19 +648,25 @@ class HierarchicalClassifier:
                 self.l3_threshold = max(optimal_threshold, 0.35)
                 logger.info(f"Optimized L3 threshold: {self.l3_threshold:.3f} (optimal was {optimal_threshold:.3f})")
 
-    def predict_proba(self, X: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    def predict_proba(self, X: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         """Get probability predictions for all levels.
 
         Args:
             X: Feature matrix.
 
         Returns:
-            Tuple of (L1 probabilities, L2 probabilities, L3 probabilities).
+            Tuple of (L1 probabilities, L2 probabilities, L2.5 probabilities, L3 probabilities).
         """
         l1_proba = self.l1_model.predict_proba(X)[:, 1]
 
         # L2 prediction for all samples (will only use for predicted injuries)
         l2_proba = self.l2_model.predict_proba(X)[:, 1]
+
+        # L2.5 prediction (if model exists)
+        if self.l25_model is not None:
+            l25_proba = self.l25_model.predict_proba(X)[:, 1]
+        else:
+            l25_proba = np.full(len(X), 0.5)  # Default to 50% if no L2.5 model
 
         # L3 prediction (if model exists)
         if self.l3_model is not None:
@@ -557,33 +674,34 @@ class HierarchicalClassifier:
         else:
             l3_proba = np.full(len(X), 0.5)  # Default to 50% if no L3 model
 
-        return l1_proba, l2_proba, l3_proba
+        return l1_proba, l2_proba, l25_proba, l3_proba
 
     def predict_binary(
         self, X: np.ndarray
-    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         """Predict binary labels for all levels.
 
         Args:
             X: Feature matrix.
 
         Returns:
-            Tuple of (L1 predictions, L2 predictions, L3 predictions).
+            Tuple of (L1 predictions, L2 predictions, L2.5 predictions, L3 predictions).
         """
-        l1_proba, l2_proba, l3_proba = self.predict_proba(X)
+        l1_proba, l2_proba, l25_proba, l3_proba = self.predict_proba(X)
 
         l1_pred = (l1_proba >= self.l1_threshold).astype(int)
         l2_pred = (l2_proba >= self.l2_threshold).astype(int)
+        l25_pred = (l25_proba >= self.l25_threshold).astype(int)
         l3_pred = (l3_proba >= self.l3_threshold).astype(int)
 
-        return l1_pred, l2_pred, l3_pred
+        return l1_pred, l2_pred, l25_pred, l3_pred
 
     def predict_multiclass(
         self,
         X: np.ndarray,
         label_encoder: LabelEncoder | None = None,
     ) -> np.ndarray:
-        """Predict original 5-class severity labels using 3-level hierarchy.
+        """Predict original 5-class severity labels using 4-level hierarchy.
 
         LabelEncoder sorts alphabetically, so typical indices are:
         - 0: FATAL
@@ -595,7 +713,8 @@ class HierarchicalClassifier:
 
         Mapping from hierarchical to multiclass:
         - L1=0 (no injury) → NO INDICATION OF INJURY
-        - L1=1, L2=1 (injury, severe) → INCAPACITATING INJURY (or FATAL if top 6%)
+        - L1=1, L2=1, L2.5=1 (injury, severe, fatal) → FATAL
+        - L1=1, L2=1, L2.5=0 (injury, severe, not fatal) → INCAPACITATING INJURY
         - L1=1, L2=0, L3=1 (injury, minor, reported) → REPORTED, NOT EVIDENT
         - L1=1, L2=0, L3=0 (injury, minor, visible) → NONINCAPACITATING INJURY
 
@@ -607,8 +726,7 @@ class HierarchicalClassifier:
         Returns:
             Array of multiclass predictions.
         """
-        l1_pred, l2_pred, l3_pred = self.predict_binary(X)
-        l1_proba, l2_proba, l3_proba = self.predict_proba(X)
+        l1_pred, l2_pred, l25_pred, l3_pred = self.predict_binary(X)
 
         # Get class indices
         if label_encoder is not None:
@@ -636,16 +754,13 @@ class HierarchicalClassifier:
         severe_mask = injury_mask & (l2_pred == 1)
         minor_mask = injury_mask & (l2_pred == 0)
 
-        # For severe cases: INCAPACITATING (default) or FATAL (top 6%)
-        multiclass[severe_mask] = idx_incapacitating
+        # Level 2.5: FATAL vs INCAPACITATING (among severe cases)
+        # Use L2.5 model predictions instead of percentile heuristic
+        fatal_mask = severe_mask & (l25_pred == 1)
+        incap_mask = severe_mask & (l25_pred == 0)
 
-        # FATAL: Use top percentile of severe cases based on probability
-        if severe_mask.sum() > 0:
-            severe_probas = l2_proba[severe_mask]
-            # Use 94th percentile as threshold (top 6% → FATAL)
-            fatal_threshold = np.percentile(severe_probas, 94)
-            very_severe_mask = severe_mask & (l2_proba >= fatal_threshold)
-            multiclass[very_severe_mask] = idx_fatal
+        multiclass[fatal_mask] = idx_fatal
+        multiclass[incap_mask] = idx_incapacitating
 
         # Level 3: Reported vs Visible (among minor injuries)
         # IS_REPORTED=1 → L3=1 → REPORTED, NOT EVIDENT
@@ -665,6 +780,7 @@ def evaluate_hierarchical(
     y_injury: np.ndarray,
     y_severe: np.ndarray,
     y_reported: np.ndarray,
+    y_fatal: np.ndarray,
     y_original: np.ndarray,
     label_encoder: LabelEncoder,
 ) -> dict:
@@ -676,6 +792,7 @@ def evaluate_hierarchical(
         y_injury: Binary injury labels.
         y_severe: Binary severity labels.
         y_reported: Binary reported injury labels (REPORTED vs NONINCAP).
+        y_fatal: Binary fatal injury labels (FATAL vs INCAPACITATING).
         y_original: Original 5-class labels.
         label_encoder: Encoder for original labels.
 
@@ -689,7 +806,7 @@ def evaluate_hierarchical(
     logger.info("LEVEL 1 EVALUATION: INJURY vs NO_INJURY")
     logger.info("=" * 60)
 
-    l1_pred, l2_pred, l3_pred = clf.predict_binary(X_test)
+    l1_pred, l2_pred, l25_pred, l3_pred = clf.predict_binary(X_test)
 
     l1_acc = accuracy_score(y_injury, l1_pred)
     l1_prec = precision_score(y_injury, l1_pred)
@@ -737,6 +854,36 @@ def evaluate_hierarchical(
 
         l2_cm = confusion_matrix(y_severe_test, l2_pred_injury)
         logger.info(f"\nL2 Confusion Matrix:\n{l2_cm}")
+
+    # Level 2.5 evaluation (on severe injury cases only)
+    logger.info("=" * 60)
+    logger.info("LEVEL 2.5 EVALUATION: FATAL vs INCAPACITATING (severe cases)")
+    logger.info("=" * 60)
+
+    severe_mask = (y_injury == 1) & (y_severe == 1)
+    y_fatal_test = y_fatal[severe_mask]
+    l25_pred_severe = l25_pred[severe_mask]
+
+    if len(y_fatal_test) > 0 and clf.l25_model is not None:
+        l25_acc = accuracy_score(y_fatal_test, l25_pred_severe)
+        l25_prec = precision_score(y_fatal_test, l25_pred_severe, zero_division=0)
+        l25_rec = recall_score(y_fatal_test, l25_pred_severe, zero_division=0)
+        l25_f1 = f1_score(y_fatal_test, l25_pred_severe, zero_division=0)
+
+        logger.info(f"L2.5 Accuracy:  {l25_acc:.4f}")
+        logger.info(f"L2.5 Precision: {l25_prec:.4f}")
+        logger.info(f"L2.5 Recall:    {l25_rec:.4f} (FATAL detection)")
+        logger.info(f"L2.5 F1:        {l25_f1:.4f}")
+
+        results["l25_accuracy"] = l25_acc
+        results["l25_precision"] = l25_prec
+        results["l25_recall"] = l25_rec
+        results["l25_f1"] = l25_f1
+
+        l25_cm = confusion_matrix(y_fatal_test, l25_pred_severe)
+        logger.info(f"\nL2.5 Confusion Matrix:\n{l25_cm}")
+    else:
+        logger.info("L2.5 model not trained or no severe injury cases in test set")
 
     # Level 3 evaluation (on minor injury cases only)
     logger.info("=" * 60)
@@ -870,6 +1017,7 @@ def run_hierarchical_pipeline(config: HierarchicalConfig | None = None) -> dict:
     logger.info("\nTarget distributions:")
     logger.info(f"  IS_INJURY: {df['IS_INJURY'].value_counts().to_dict()}")
     logger.info(f"  IS_SEVERE: {df['IS_SEVERE'].value_counts().to_dict()}")
+    logger.info(f"  IS_FATAL: {df['IS_FATAL'].value_counts().to_dict()}")
     logger.info(f"  IS_REPORTED: {df['IS_REPORTED'].value_counts().to_dict()}")
     logger.info(f"  Original: {df['MOST_SEVERE_INJURY'].value_counts().to_dict()}")
 
@@ -882,6 +1030,7 @@ def run_hierarchical_pipeline(config: HierarchicalConfig | None = None) -> dict:
     X = X_df.values
     y_injury = df["IS_INJURY"].values
     y_severe = df["IS_SEVERE"].values
+    y_fatal = df["IS_FATAL"].values
     y_reported = df["IS_REPORTED"].values
     y_original = df["SEVERITY_ENCODED"].values
 
@@ -894,6 +1043,8 @@ def run_hierarchical_pipeline(config: HierarchicalConfig | None = None) -> dict:
         y_inj_test,
         y_sev_train,
         y_sev_test,
+        y_fat_train,
+        y_fat_test,
         y_rep_train,
         y_rep_test,
         y_orig_train,
@@ -902,6 +1053,7 @@ def run_hierarchical_pipeline(config: HierarchicalConfig | None = None) -> dict:
         X,
         y_injury,
         y_severe,
+        y_fatal,
         y_reported,
         y_original,
         test_size=config.test_size,
@@ -920,12 +1072,15 @@ def run_hierarchical_pipeline(config: HierarchicalConfig | None = None) -> dict:
         y_inj_val,
         y_sev_train_final,
         y_sev_val,
+        y_fat_train_final,
+        y_fat_val,
         y_rep_train_final,
         y_rep_val,
     ) = train_test_split(
         X_train,
         y_inj_train,
         y_sev_train,
+        y_fat_train,
         y_rep_train,
         test_size=0.2,  # 20% of training data for validation
         random_state=config.random_state,
@@ -938,7 +1093,7 @@ def run_hierarchical_pipeline(config: HierarchicalConfig | None = None) -> dict:
     logger.info("\n[5/6] Training hierarchical classifier...")
     clf = HierarchicalClassifier(config)
     clf.feature_cols = feature_cols
-    clf.fit(X_train_final, y_inj_train_final, y_sev_train_final, y_rep_train_final)
+    clf.fit(X_train_final, y_inj_train_final, y_sev_train_final, y_rep_train_final, y_fat_train_final)
 
     # Optimize thresholds on VALIDATION set (not test set!)
     logger.info("\nOptimizing thresholds on validation set...")
@@ -947,8 +1102,9 @@ def run_hierarchical_pipeline(config: HierarchicalConfig | None = None) -> dict:
         y_inj_val,
         y_sev_val,
         y_rep_val,
+        y_fat_val,
         l1_target_recall=0.7,
-        l2_target_recall=0.5,
+        l25_target_recall=0.4,
         l3_target_recall=0.35,  # Lower target for balanced REPORTED/NONINCAP
     )
 
@@ -960,6 +1116,7 @@ def run_hierarchical_pipeline(config: HierarchicalConfig | None = None) -> dict:
         y_inj_test,
         y_sev_test,
         y_rep_test,
+        y_fat_test,
         y_orig_test,
         label_encoder,
     )
