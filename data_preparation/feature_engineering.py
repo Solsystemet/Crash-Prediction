@@ -250,14 +250,16 @@ def add_binary_targets(
 ) -> pd.DataFrame:
     """Add binary target columns for hierarchical classification.
 
-    Creates three binary targets for three-stage classification:
+    Creates four binary targets for four-stage classification:
     - IS_INJURY: 1 if any injury occurred, 0 if "NO INDICATION OF INJURY"
     - IS_SEVERE: 1 if FATAL or INCAPACITATING, 0 otherwise (among injuries)
+    - IS_FATAL: 1 if FATAL, 0 if INCAPACITATING (among severe injuries)
     - IS_REPORTED: 1 if REPORTED, NOT EVIDENT, 0 if NONINCAPACITATING (among minors)
 
     This enables hierarchical classification:
     - Level 1: Predict INJURY vs NO_INJURY (14% vs 86% - more balanced)
     - Level 2: For injury cases, predict SEVERE vs MINOR
+    - Level 2.5: For severe cases, predict FATAL vs INCAPACITATING
     - Level 3: For minor cases, predict REPORTED vs NONINCAPACITATING
 
     Args:
@@ -265,7 +267,7 @@ def add_binary_targets(
         severity_column: Name of the column containing severity labels.
 
     Returns:
-        DataFrame with IS_INJURY, IS_SEVERE, and IS_REPORTED columns added.
+        DataFrame with IS_INJURY, IS_SEVERE, IS_FATAL, and IS_REPORTED columns added.
     """
     df = df.copy()
 
@@ -283,6 +285,11 @@ def add_binary_targets(
     severe_patterns = ["FATAL", "INCAPACITATING INJURY", "INCAPACITATING_INJURY"]
     is_severe = severity.isin([p.upper() for p in severe_patterns])
     df["IS_SEVERE"] = is_severe.astype(int)
+
+    # IS_FATAL: 1 if FATAL, 0 if INCAPACITATING (used for L2.5 classifier)
+    fatal_patterns = ["FATAL"]
+    is_fatal = severity.isin([p.upper() for p in fatal_patterns])
+    df["IS_FATAL"] = is_fatal.astype(int)
 
     # IS_REPORTED: 1 if REPORTED, NOT EVIDENT, 0 if NONINCAPACITATING
     # This distinguishes subtle injuries from visible ones
