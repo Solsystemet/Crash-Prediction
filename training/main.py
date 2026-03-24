@@ -1,4 +1,4 @@
-"""Training entry point: train and compare Neural Network vs Random Forest.
+"""Training entry point: train and compare LightGBM vs Random Forest.
 
 Run with: python -m training.main
 """
@@ -13,15 +13,15 @@ from data_preparation.tensor_config import SEVERITY_PREDICTION_CONFIG
 from training.evaluation import (
     EvaluationMetrics,
     compare_models,
-    evaluate_neural_network,
+    evaluate_lightgbm,
     evaluate_random_forest,
     print_classification_report_full,
     print_metrics,
 )
-from training.train_neural_net import (
-    TrainingConfig,
-    save_model as save_nn_model,
-    train_neural_network,
+from training.light_gbm import (
+    LightGBMConfig,
+    save_lightgbm,
+    train_lightgbm,
 )
 from training.train_random_forest import (
     RandomForestConfig,
@@ -52,36 +52,22 @@ def main() -> None:
     print(f"  Classes: {result.encoder_registry.get_num_classes()}")
     sys.stdout.flush()
 
-    # Create DataLoaders for neural network
-    train_loader = DataLoader(
-        result.train_dataset,
-        batch_size=32,
-        shuffle=True,
-    )
-    val_loader = DataLoader(
-        result.val_dataset,
-        batch_size=32,
-        shuffle=False,
+    # =========================================================================
+    # Step 2: Train LightGBM
+    # =========================================================================
+    print("\n[2/5] Training LightGBM...")
+    lgbm_config = LightGBMConfig(
+        n_estimators=500,
+        learning_rate=0.05,
+        num_leaves=31,
+        max_depth=-1,
     )
 
-    # =========================================================================
-    # Step 2: Train Neural Network
-    # =========================================================================
-    print("\n[2/5] Training Neural Network...")
-    nn_config = TrainingConfig(
-        epochs=30,
-        learning_rate=1e-3,
-        early_stopping_patience=5,
-    )
-
-    nn_model, nn_history = train_neural_network(
-        train_loader=train_loader,
-        val_loader=val_loader,
-        num_features=result.train_dataset.num_features,
-        num_classes=result.encoder_registry.get_num_classes(),
-        config=nn_config,
-        verbose=True,
+    lgbm_model = train_lightgbm(
         train_dataset=result.train_dataset,
+        val_dataset=result.val_dataset,
+        config=lgbm_config,
+        verbose=True,
     )
 
     # =========================================================================
@@ -104,10 +90,9 @@ def main() -> None:
     # =========================================================================
     print("\n[4/5] Evaluating on validation set...")
 
-    nn_val_metrics = evaluate_neural_network(
-        model=nn_model,
+    lgbm_val_metrics = evaluate_lightgbm(
+        model=lgbm_model,
         dataset=result.val_dataset,
-        device=nn_config.device,
     )
 
     rf_val_metrics = evaluate_random_forest(
@@ -116,7 +101,7 @@ def main() -> None:
     )
 
     # Compare and pick winner
-    winner = compare_models(nn_val_metrics, rf_val_metrics)
+    winner = compare_models(lgbm_val_metrics, rf_val_metrics)
 
     # =========================================================================
     # Step 5: Final Evaluation on Test Set (Winner Only)
@@ -126,21 +111,22 @@ def main() -> None:
     # Get class names for detailed report
     class_names = None
     if result.encoder_registry.target_encoder is not None:
-        class_names = list(result.encoder_registry.target_encoder.classes_)
+        encoder_classes = result.encoder_registry.target_encoder.classes_
+        if encoder_classes is not None:
+            class_names = list(encoder_classes)
 
-    if winner == "neural_network":
-        test_metrics = evaluate_neural_network(
-            model=nn_model,
+    if winner == "lightgbm":
+        test_metrics = evaluate_lightgbm(
+            model=lgbm_model,
             dataset=result.test_dataset,
-            device=nn_config.device,
         )
-        print_metrics(test_metrics, title="Neural Network - Test Set Results")
+        print_metrics(test_metrics, title="LightGBM - Test Set Results")
         print_classification_report_full(test_metrics, class_names=class_names)
 
         # Save winning model
         MODELS_DIR.mkdir(parents=True, exist_ok=True)
-        save_nn_model(nn_model, MODELS_DIR / "neural_network.pt")
-        print(f"\nModel saved to: {MODELS_DIR / 'neural_network.pt'}")
+        save_lightgbm(lgbm_model, MODELS_DIR / "lightgbm.joblib")
+        print(f"\nModel saved to: {MODELS_DIR / 'lightgbm.joblib'}")
 
     else:
         test_metrics = evaluate_random_forest(

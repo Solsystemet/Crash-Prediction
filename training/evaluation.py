@@ -6,6 +6,7 @@ This module provides functions for computing metrics and comparing models.
 from dataclasses import dataclass
 from typing import Protocol
 
+import lightgbm as lgb
 import numpy as np
 import torch
 from numpy.typing import NDArray
@@ -92,6 +93,26 @@ def evaluate_random_forest(
     return _compute_metrics(predictions, true_labels)
 
 
+def evaluate_lightgbm(
+    model: lgb.LGBMClassifier,
+    dataset: CrashTensorDataset,
+) -> EvaluationMetrics:
+    """Evaluate a LightGBM model on a dataset.
+
+    Args:
+        model: Trained LightGBM model.
+        dataset: Dataset to evaluate on.
+
+    Returns:
+        EvaluationMetrics containing results.
+    """
+    X = dataset.features.numpy()
+    true_labels = dataset.labels.numpy()
+    predictions = model.predict(X)
+
+    return _compute_metrics(predictions, true_labels)
+
+
 def _compute_metrics(
     predictions: NDArray[np.int64],
     true_labels: NDArray[np.int64],
@@ -165,32 +186,32 @@ def print_classification_report_full(
 
 
 def compare_models(
-    nn_metrics: EvaluationMetrics,
+    lgbm_metrics: EvaluationMetrics,
     rf_metrics: EvaluationMetrics,
 ) -> str:
     """Compare two models and return the winner.
 
     Args:
-        nn_metrics: Neural network evaluation metrics.
+        lgbm_metrics: LightGBM evaluation metrics.
         rf_metrics: Random Forest evaluation metrics.
 
     Returns:
-        "neural_network" or "random_forest" based on F1 score.
+        "lightgbm" or "random_forest" based on F1 score.
     """
     print("\n" + "=" * 60)
     print("MODEL COMPARISON (Validation Set)")
     print("=" * 60)
-    print(f"\n{'Metric':<15} {'Neural Network':<18} {'Random Forest':<18}")
+    print(f"\n{'Metric':<15} {'LightGBM':<18} {'Random Forest':<18}")
     print("-" * 51)
-    print(f"{'Accuracy':<15} {nn_metrics.accuracy:<18.4f} {rf_metrics.accuracy:<18.4f}")
-    print(f"{'Precision':<15} {nn_metrics.precision:<18.4f} {rf_metrics.precision:<18.4f}")
-    print(f"{'Recall':<15} {nn_metrics.recall:<18.4f} {rf_metrics.recall:<18.4f}")
-    print(f"{'F1 (macro)':<15} {nn_metrics.f1:<18.4f} {rf_metrics.f1:<18.4f}")
+    print(f"{'Accuracy':<15} {lgbm_metrics.accuracy:<18.4f} {rf_metrics.accuracy:<18.4f}")
+    print(f"{'Precision':<15} {lgbm_metrics.precision:<18.4f} {rf_metrics.precision:<18.4f}")
+    print(f"{'Recall':<15} {lgbm_metrics.recall:<18.4f} {rf_metrics.recall:<18.4f}")
+    print(f"{'F1 (macro)':<15} {lgbm_metrics.f1:<18.4f} {rf_metrics.f1:<18.4f}")
     print("-" * 51)
 
-    if nn_metrics.f1 >= rf_metrics.f1:
-        winner = "neural_network"
-        print(f"\n>>> Winner: Neural Network (F1: {nn_metrics.f1:.4f})", flush=True)
+    if lgbm_metrics.f1 >= rf_metrics.f1:
+        winner = "lightgbm"
+        print(f"\n>>> Winner: LightGBM (F1: {lgbm_metrics.f1:.4f})", flush=True)
     else:
         winner = "random_forest"
         print(f"\n>>> Winner: Random Forest (F1: {rf_metrics.f1:.4f})", flush=True)
