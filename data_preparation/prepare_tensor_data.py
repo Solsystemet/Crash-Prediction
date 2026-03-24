@@ -323,13 +323,18 @@ def _split_data(
     """
     n_samples = features.shape[0]
 
-    # Create shuffled indices
-    rng = np.random.default_rng(config.random_seed)
-    indices = rng.permutation(n_samples)
-
     # Calculate split points
     train_end = int(n_samples * config.train_ratio)
     val_end = train_end + int(n_samples * config.val_ratio)
+
+    if config.split_by_time:
+        # Time-based split: train < val < test (assumes data is sorted by time)
+        # No shuffling - preserve temporal order
+        indices = np.arange(n_samples)
+    else:
+        # Random split: shuffle indices
+        rng = np.random.default_rng(config.random_seed)
+        indices = rng.permutation(n_samples)
 
     # Split indices
     train_idx = indices[:train_end]

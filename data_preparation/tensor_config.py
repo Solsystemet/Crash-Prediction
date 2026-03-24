@@ -26,6 +26,8 @@ class TensorConfig:
         random_seed: Seed for reproducible train/val/test splits.
         fill_categorical_na: Value to fill missing categorical values.
         fill_numerical_na: Strategy for missing numerical values ("median" or "mean").
+        split_by_time: If True, split data temporally (train < val < test in time).
+            If False, use random shuffled split.
     """
 
     target_column: str
@@ -39,6 +41,7 @@ class TensorConfig:
     random_seed: int = 42
     fill_categorical_na: str = "UNKNOWN"
     fill_numerical_na: Literal["median", "mean"] = "median"
+    split_by_time: bool = False
 
     def __post_init__(self) -> None:
         """Validate configuration after initialization."""
@@ -128,3 +131,47 @@ MINIMAL_TEST_CONFIG = TensorConfig(
     random_seed=42,
 )
 """Minimal config with just 3 features for quick testing."""
+
+
+# =============================================================================
+# Hourly Crash Count Configuration
+# =============================================================================
+
+# Feature columns for hourly crash count prediction
+# These match the output of prepare_hourly_data() with default settings
+_HOURLY_CYCLICAL_FEATURES = [
+    "hour_sin", "hour_cos",
+    "day_of_week_sin", "day_of_week_cos",
+    "month_sin", "month_cos",
+]
+
+_HOURLY_WEATHER_FEATURES = [
+    "Air Temperature",
+    "Humidity",
+    "Rain Intensity",
+    "Wind Speed",
+]
+
+_HOURLY_LAG_FEATURES = [
+    f"{col}_lag_{lag}h"
+    for col in _HOURLY_WEATHER_FEATURES
+    for lag in [1, 2, 3]
+]
+
+_HOURLY_ALL_FEATURES = (
+    _HOURLY_CYCLICAL_FEATURES + _HOURLY_WEATHER_FEATURES + _HOURLY_LAG_FEATURES
+)
+
+HOURLY_CRASH_COUNT_CONFIG = TensorConfig(
+    target_column="crash_count",
+    feature_columns=_HOURLY_ALL_FEATURES,
+    categorical_columns=[],
+    numerical_columns=_HOURLY_ALL_FEATURES,
+    task_type="regression",
+    train_ratio=0.7,
+    val_ratio=0.15,
+    test_ratio=0.15,
+    random_seed=42,
+    split_by_time=True,
+)
+"""Config for hourly crash count prediction using weather and time features."""

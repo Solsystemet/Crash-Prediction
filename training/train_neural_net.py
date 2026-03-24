@@ -13,7 +13,7 @@ from torch.optim import Adam
 from torch.utils.data import DataLoader
 
 from data_preparation.tensor_dataset import CrashTensorDataset
-from training.models import CrashPredictionMLP
+from training.neural_nets import CrashPredictionMLP
 
 
 @dataclass
