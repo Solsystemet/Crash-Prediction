@@ -72,6 +72,21 @@ def main() -> None:
         early_stopping_rounds=50,
     )
 
+    # Custom class weights to handle severe imbalance
+    # Based on class distribution (using majority class as baseline):
+    # Class 0 (FATAL): 170 samples -> weight 781.5
+    # Class 1 (INCAPACITATING INJURY): 2,505 -> weight 53.0
+    # Class 2 (NO INDICATION OF INJURY): 132,847 -> weight 1.0 (baseline)
+    # Class 3 (NONINCAPACITATING INJURY): 12,494 -> weight 10.6
+    # Class 4 (REPORTED, NOT EVIDENT): 7,180 -> weight 18.5
+    custom_class_weights = {
+        0: 781.5,  # FATAL
+        1: 53.0,   # INCAPACITATING INJURY
+        2: 1.0,    # NO INDICATION OF INJURY
+        3: 10.6,   # NONINCAPACITATING INJURY
+        4: 18.5,   # REPORTED, NOT EVIDENT
+    }
+
     gbt_model, train_accuracy = train_gradient_boosted_trees(
         train_loader=train_loader,
         val_loader=val_loader,
@@ -80,6 +95,7 @@ def main() -> None:
         config=gbt_config,
         verbose=True,
         train_dataset=result.train_dataset,
+        class_weights=custom_class_weights,
     )
 
     # =========================================================================

@@ -6,6 +6,7 @@ import torch
 import numpy as np
 import xgboost as xgb
 from sklearn.metrics import accuracy_score
+from sklearn.utils.class_weight import compute_class_weight
 
 from data_preparation.tensor_dataset import CrashTensorDataset
 
@@ -52,6 +53,28 @@ class GradientBoostingConfig:
         return params
 
 
+def compute_sample_weights(y: np.ndarray, class_weights: dict[int, float] | None = None) -> np.ndarray:
+    """Compute sample weights for each instance based on class weights.
+    
+    Args:
+        y: Array of class labels.
+        class_weights: Optional dictionary mapping class indices to weights.
+                      If None, uses balanced weights (inverse frequency).
+    
+    Returns:
+        Array of sample weights, one per instance.
+    """
+    if class_weights is None:
+        # Compute balanced weights: inversely proportional to class frequency
+        classes = np.unique(y)
+        weights = compute_class_weight('balanced', classes=classes, y=y)
+        class_weights = dict(zip(classes, weights))
+    
+    # Map class weights to each sample
+    sample_weights = np.array([class_weights[label] for label in y])
+    return sample_weights
+
+
 def train_gradient_boosted_trees(
     train_loader: DataLoader,
     val_loader: DataLoader,
@@ -60,6 +83,7 @@ def train_gradient_boosted_trees(
     config: GradientBoostingConfig | None = None,
     verbose: bool = True,
     train_dataset: CrashTensorDataset | None = None,  # noqa: F821
+    class_weights: dict[int, float] | str | None = "balanced",
 ):
     if config is None:
         config = GradientBoostingConfig()
@@ -81,15 +105,28 @@ def train_gradient_boosted_trees(
     X_train, y_train = loader_to_numpy(train_loader)
     X_val, y_val = loader_to_numpy(val_loader)
 
-    smote = SMOTE(sampling_strategy="auto", random_state=42)
-    X_train_sm, y_train_sm = smote.fit_resample(X_train, y_train)
-
-    y_train_sm = y_train_sm.astype(np.int64, copy=False)
+    y_train = y_train.astype(np.int64, copy=False)
     y_val = y_val.astype(np.int64, copy=False)
 
+    # Compute sample weights to handle class imbalance
+    sample_weights = None
+    if class_weights is not None:
+        if class_weights == "balanced":
+            sample_weights = compute_sample_weights(y_train, class_weights=None)
+        elif isinstance(class_weights, dict):
+            sample_weights = compute_sample_weights(y_train, class_weights=class_weights)
+        
+        if verbose and sample_weights is not None:
+            unique_classes, class_counts = np.unique(y_train, return_counts=True)
+            print("Class distribution:")
+            for cls, count in zip(unique_classes, class_counts):
+                weight = sample_weights[y_train == cls][0]
+                print(f"  Class {cls}: {count} samples (weight: {weight:.4f})")
+
     train_data = xgb.DMatrix(
-        X_train_sm,
-        label=y_train_sm,
+        X_train,
+        label=y_train,
+        weight=sample_weights,
         enable_categorical=True,
     )
     val_data = xgb.DMatrix(X_val, label=y_val, enable_categorical=True)
