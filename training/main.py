@@ -6,12 +6,9 @@ Run with: python -m training.main
 import sys
 from pathlib import Path
 
-from torch.utils.data import DataLoader
-
 from data_preparation.data_prepper import prepare_data
 from data_preparation.tensor_config import SEVERITY_PREDICTION_CONFIG
 from training.evaluation import (
-    EvaluationMetrics,
     compare_models,
     evaluate_lightgbm,
     evaluate_random_forest,
@@ -104,7 +101,9 @@ def main() -> None:
     winner = compare_models(lgbm_val_metrics, rf_val_metrics)
 
     # =========================================================================
-    # Step 5: Final Evaluation on Test Set (Winner Only)
+    # Step 5: Final Evaluation on Test Set
+    #   - Always print LightGBM test report (requested)
+    #   - Save the validation winner
     # =========================================================================
     print("\n[5/5] Final evaluation on test set...")
 
@@ -115,31 +114,18 @@ def main() -> None:
         if encoder_classes is not None:
             class_names = list(encoder_classes)
 
-    if winner == "lightgbm":
-        test_metrics = evaluate_lightgbm(
-            model=lgbm_model,
-            dataset=result.test_dataset,
-        )
-        print_metrics(test_metrics, title="LightGBM - Test Set Results")
-        print_classification_report_full(test_metrics, class_names=class_names)
+    # Always: LightGBM test metrics + report
+    lgbm_test_metrics = evaluate_lightgbm(
+        model=lgbm_model,
+        dataset=result.test_dataset,
+    )
+    print_metrics(lgbm_test_metrics, title="LightGBM - Test Set Results")
+    print_classification_report_full(lgbm_test_metrics, class_names=class_names)
 
-        # Save winning model
+    if winner == "lightgbm":
         MODELS_DIR.mkdir(parents=True, exist_ok=True)
         save_lightgbm(lgbm_model, MODELS_DIR / "lightgbm.joblib")
         print(f"\nModel saved to: {MODELS_DIR / 'lightgbm.joblib'}")
-
-    else:
-        test_metrics = evaluate_random_forest(
-            model=rf_model,
-            dataset=result.test_dataset,
-        )
-        print_metrics(test_metrics, title="Random Forest - Test Set Results")
-        print_classification_report_full(test_metrics, class_names=class_names)
-
-        # Save winning model
-        MODELS_DIR.mkdir(parents=True, exist_ok=True)
-        save_random_forest(rf_model, MODELS_DIR / "random_forest.joblib")
-        print(f"\nModel saved to: {MODELS_DIR / 'random_forest.joblib'}")
 
     print("\n" + "=" * 60)
     print("Training complete!")

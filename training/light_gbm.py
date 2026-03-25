@@ -55,7 +55,7 @@ class LightGBMConfig:
     class_weight: str | None = "balanced"
     verbose: int = -1
     device: str = "cpu"
-    use_smote: bool = True
+    use_smote: bool = False
     smote_k_neighbors: int = 5
     smote_sampling_strategy: str = "auto"
 
