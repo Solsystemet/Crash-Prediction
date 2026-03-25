@@ -24,6 +24,40 @@ from data_preparation.tensor_config import TensorConfig
 from data_preparation.tensor_dataset import CrashTensorDataset
 
 
+def map_injury_severity_to_3_classes(severity: str) -> str:
+    """Map original 5 injury severity categories to 3 simplified categories.
+    
+    Mapping:
+        - SEVERE: FATAL, INCAPACITATING INJURY
+        - MINOR: NONINCAPACITATING INJURY, REPORTED, NOT EVIDENT
+        - NO_INJURY: NO INDICATION OF INJURY
+    
+    Args:
+        severity: Original injury severity label (or already mapped label).
+        
+    Returns:
+        Mapped severity category (SEVERE, MINOR, or NO_INJURY).
+        
+    Note:
+        The output labels are prefixed with numbers to ensure proper ordering
+        in classification reports (SEVERE first, then MINOR, then NO_INJURY).
+    """
+    # Handle already-mapped values (idempotent)
+    if severity in ("SEVERE", "MINOR", "NO_INJURY"):
+        return severity
+    
+    # Map original 5 categories to 3 new categories
+    # Using numeric prefixes ensures proper severity-based ordering
+    if severity in ("FATAL", "INCAPACITATING INJURY"):
+        return "SEVERE"
+    elif severity in ("NONINCAPACITATING INJURY", "REPORTED, NOT EVIDENT"):
+        return "MINOR"
+    elif severity == "NO INDICATION OF INJURY":
+        return "NO_INJURY"
+    else:
+        raise ValueError(f"Unknown injury severity: {severity}")
+
+
 @dataclass
 class TensorPipelineResult:
     """Result of tensor data preparation.
@@ -156,6 +190,19 @@ def prepare_tensor_data(
     # Step 3: Filter to relevant columns and drop rows with missing target
     df_subset = df[all_cols].copy()
     df_subset = df_subset.dropna(subset=[target_col])
+    
+    # Step 3a: Filter out UNKNOWN injury severity entries
+    if target_col == "MOST_SEVERE_INJURY":
+        initial_count = len(df_subset)
+        df_subset = df_subset[df_subset[target_col] != "UNKNOWN"].copy()
+        filtered_count = initial_count - len(df_subset)
+        if filtered_count > 0:
+            print(f"Filtered out {filtered_count} UNKNOWN injury severity entries")
+    
+    # Step 3b: Map 5 injury categories to 3 simplified categories
+    if target_col == "MOST_SEVERE_INJURY":
+        df_subset[target_col] = df_subset[target_col].apply(map_injury_severity_to_3_classes)
+        print(f"Mapped injury severities to 3 categories: {df_subset[target_col].value_counts().to_dict()}")
 
     # Step 4: Handle missing values in features
     df_subset = _fill_missing_values(df_subset, config)
@@ -253,8 +300,23 @@ def _create_encoder_registry(
         target_encoder = CategoricalEncoder(
             column_name=config.target_column,
             unknown_value=config.fill_categorical_na,
+            add_unknown_class=False,  # Don't add UNKNOWN for target after filtering
         )
-        target_encoder.fit(df[config.target_column])
+        
+        # For MOST_SEVERE_INJURY, manually control class ordering
+        if config.target_column == "MOST_SEVERE_INJURY":
+            # Get unique values from data
+            unique_vals = set(df[config.target_column].unique())
+            # Define severity-based order: SEVERE -> MINOR -> NO_INJURY
+            desired_order = ["SEVERE", "MINOR", "NO_INJURY"]
+            ordered_classes = [c for c in desired_order if c in unique_vals]
+            # Directly set classes without fit (which would alphabetically sort)
+            target_encoder.classes_ = np.array(ordered_classes, dtype=np.str_)
+            target_encoder._encoder.classes_ = target_encoder.classes_
+        else:
+            # Normal fit for other target columns
+            target_encoder.fit(df[config.target_column])
+        
         registry.target_encoder = target_encoder
 
     return registry

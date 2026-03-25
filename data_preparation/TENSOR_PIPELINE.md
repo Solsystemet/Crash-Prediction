@@ -162,6 +162,12 @@ From `FilteredTrafficCrashesSchema`:
 - `ROADWAY_SURFACE_COND` - Road surface condition
 - `ROAD_DEFECT` - Any road defects present
 - `MOST_SEVERE_INJURY` - Most severe injury in crash (common target)
+  - **3 categories**: `SEVERE`, `MINOR`, `NO_INJURY`
+  - Automatically mapped from original 5 categories:
+    - `SEVERE`: FATAL + INCAPACITATING INJURY
+    - `MINOR`: NONINCAPACITATING INJURY + REPORTED, NOT EVIDENT
+    - `NO_INJURY`: NO INDICATION OF INJURY
+  - UNKNOWN entries are filtered out during data preparation
 
 **Numerical:**
 

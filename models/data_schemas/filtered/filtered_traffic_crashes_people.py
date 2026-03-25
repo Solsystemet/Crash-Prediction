@@ -55,12 +55,9 @@ class FilteredTrafficCrashesPeopleSchema(pa.DataFrameModel):
     INJURY_CLASSIFICATION: Series[str] = pa.Field(
         nullable=True,
         isin=[
-            "NO INDICATION OF INJURY",
-            "NONINCAPACITATING INJURY",
-            "REPORTED, NOT EVIDENT",
-            "INCAPACITATING INJURY",
-            "FATAL",
-            "UNKNOWN",
+            "SEVERE",
+            "MINOR",
+            "NO_INJURY",
         ],
     )
 

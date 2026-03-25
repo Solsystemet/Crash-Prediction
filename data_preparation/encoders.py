@@ -23,10 +23,14 @@ class CategoricalEncoder:
         column_name: Name of the column this encoder is for.
         classes_: Array of unique classes after fitting.
         unknown_value: Value used for unknown categories during transform.
+        add_unknown_class: Whether to always add unknown_value to classes.
+            If True, unknown_value is always added (for handling unseen values).
+            If False, unknown_value is only added if present in data or if NaN exists.
     """
 
     column_name: str
     unknown_value: str = "UNKNOWN"
+    add_unknown_class: bool = True
     _encoder: LabelEncoder = field(default_factory=LabelEncoder, repr=False)
     classes_: NDArray[np.str_] | None = field(default=None, init=False)
 
@@ -39,11 +43,20 @@ class CategoricalEncoder:
         Returns:
             Self for method chaining.
         """
-        # Fill NA and ensure unknown_value is in classes
+        # Fill NA with unknown_value
         filled = values.fillna(self.unknown_value).astype(str)
         unique_values = list(filled.unique())
-        if self.unknown_value not in unique_values:
-            unique_values.append(self.unknown_value)
+        
+        # Add unknown_value to classes based on settings
+        if self.add_unknown_class:
+            # Always add unknown for handling unseen categories
+            if self.unknown_value not in unique_values:
+                unique_values.append(self.unknown_value)
+        else:
+            # Only add if there are NaN values in original data
+            has_nan = values.isna().any()
+            if has_nan and self.unknown_value not in unique_values:
+                unique_values.append(self.unknown_value)
 
         self._encoder.fit(unique_values)
         self.classes_ = self._encoder.classes_
