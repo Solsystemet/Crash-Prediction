@@ -22,7 +22,6 @@ from training.light_gbm import (
 )
 from training.train_random_forest import (
     RandomForestConfig,
-    save_random_forest,
     train_random_forest,
 )
 
@@ -54,10 +53,17 @@ def main() -> None:
     # =========================================================================
     print("\n[2/5] Training LightGBM...")
     lgbm_config = LightGBMConfig(
-        n_estimators=500,
+        n_estimators=2000,
         learning_rate=0.05,
-        num_leaves=31,
-        max_depth=-1,
+        num_leaves=48,
+        min_child_samples=200,
+        class_weight="balanced",
+        boosting_type="goss",
+        top_rate=0.2,
+        other_rate=0.1,
+        use_smote=False,
+        eval_metric="multi_logloss",
+        early_stopping_rounds=50,
     )
 
     lgbm_model = train_lightgbm(
