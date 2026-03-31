@@ -32,7 +32,8 @@ class LightGBMConfig:
         n_jobs: Number of parallel jobs. -1 uses all processors.
         random_state: Random seed for reproducibility.
         class_weight: How to weight classes. "balanced" adjusts weights
-            inversely proportional to class frequencies.
+            inversely proportional to class frequencies. Can also be a
+            dict mapping encoded class id -> weight.
         verbose: Verbosity level for LightGBM. -1 to suppress output.
         device: Device to train on. "cpu" only (GPU requires special build).
         use_smote: Whether to apply SMOTE for handling class imbalance.
@@ -57,17 +58,17 @@ class LightGBMConfig:
     boosting_type: str = "goss"
     top_rate: float = 0.2
     other_rate: float = 0.1
-    eval_metric: str | None = "multi_logloss"
+    eval_metric: str | list[str] | None = "multi_logloss"
     early_stopping_rounds: int = 50
     n_jobs: int = -1
     random_state: int = 42
-    class_weight: str | None = "balanced"
+    class_weight: str | dict[int, float] | None = "balanced"
     verbose: int = -1
     device: str = "cpu"
-    use_smote: bool = False
+    use_smote: bool = True
     smote_k_neighbors: int = 5
     smote_sampling_strategy: str = "auto"
-    smote_target_ratio_to_majority: float | None = 0.1
+    smote_target_ratio_to_majority: float | None = 1
 
 
 def train_lightgbm(
@@ -147,7 +148,7 @@ def train_lightgbm(
     num_classes = len(np.unique(y_train))
     eval_metric = config.eval_metric
     if eval_metric is None:
-        eval_metric = "binary_logloss" if num_classes == 2 else "multi_logloss"
+        eval_metric = ["binary_logloss", "auc"] if num_classes == 2 else ["multi_logloss", "auc_mu"]
 
     # Prepare validation data for early stopping if provided
     eval_set: list[tuple[Any, Any]] | None = None

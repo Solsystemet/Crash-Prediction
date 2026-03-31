@@ -4,20 +4,15 @@ This module provides functions for computing metrics and comparing models.
 """
 
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Any
 
 import lightgbm as lgb
 import numpy as np
+import pandas as pd
 import torch
 from numpy.typing import NDArray
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import (
-    accuracy_score,
-    classification_report,
-    f1_score,
-    precision_score,
-    recall_score,
-)
+from sklearn import metrics as skmetrics  # type: ignore[import-untyped]
+from sklearn.ensemble import RandomForestClassifier  # type: ignore[import-untyped]
 
 from data_preparation.tensor_dataset import CrashTensorDataset
 from training.models import CrashPredictionMLP
@@ -107,8 +102,11 @@ def evaluate_lightgbm(
         EvaluationMetrics containing results.
     """
     X = dataset.features.numpy()
+    X_pred: Any = X
     true_labels = dataset.labels.numpy()
-    predictions = model.predict(X)
+    if hasattr(model, "feature_name_") and len(model.feature_name_) == X.shape[1]:
+        X_pred = pd.DataFrame(X, columns=list(model.feature_name_))
+    predictions = model.predict(X_pred)
 
     return _compute_metrics(predictions, true_labels)
 
@@ -127,10 +125,12 @@ def _compute_metrics(
         EvaluationMetrics containing results.
     """
     return EvaluationMetrics(
-        accuracy=accuracy_score(true_labels, predictions),
-        precision=precision_score(true_labels, predictions, average="macro", zero_division=0),
-        recall=recall_score(true_labels, predictions, average="macro", zero_division=0),
-        f1=f1_score(true_labels, predictions, average="macro", zero_division=0),
+        accuracy=skmetrics.accuracy_score(true_labels, predictions),
+        precision=skmetrics.precision_score(
+            true_labels, predictions, average="macro", zero_division=0
+        ),
+        recall=skmetrics.recall_score(true_labels, predictions, average="macro", zero_division=0),
+        f1=skmetrics.f1_score(true_labels, predictions, average="macro", zero_division=0),
         predictions=predictions,
         true_labels=true_labels,
     )
@@ -174,7 +174,7 @@ def print_classification_report_full(
         filtered_names = None
     
     print(
-        classification_report(
+        skmetrics.classification_report(
             metrics.true_labels,
             metrics.predictions,
             labels=unique_labels,
