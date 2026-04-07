@@ -41,6 +41,57 @@ def _strip_thousands_separators(
     return dataframe
 
 
+def _fix_decimal_separator(
+    dataframe: pd.DataFrame, columns: list[str]
+) -> pd.DataFrame:
+    """Convert European decimal separator (comma) to period for numeric columns."""
+    for col in columns:
+        if col in dataframe.columns:
+            # Replace comma with period for decimal values
+            dataframe[col] = dataframe[col].astype(str).str.replace(",", ".", regex=False)
+    return dataframe
+
+
+def _fix_number(val) -> str | None:
+    """Normalize a numeric string to standard decimal format.
+    
+    Handles cases like:
+    - "1.056,1" -> "1056.1" (European: dot thousands, comma decimal)
+    - "1.056.1" -> "1056.1" (malformed with multiple dots)
+    - "4,00" -> "4.00" (just comma decimal)
+    - Single dot with no comma: unchanged (already correct)
+    """
+    s = str(val).strip()
+    if s == "nan" or s == "None" or s == "":
+        return None
+    
+    dots = s.count(".")
+    commas = s.count(",")
+    
+    if dots > 1:
+        # Multiple dots: remove all but last (e.g., "1.056.1" -> "1056.1")
+        parts = s.rsplit(".", 1)
+        s = parts[0].replace(".", "") + "." + parts[1]
+    elif dots == 1 and commas == 1:
+        # European format: "1.056,1" -> "1056.1"
+        s = s.replace(".", "").replace(",", ".")
+    elif commas == 1 and dots == 0:
+        # Just comma decimal: "4,00" -> "4.00"
+        s = s.replace(",", ".")
+    # If just one dot and no comma, assume it's already correct
+    return s
+
+
+def _fix_european_number_format(
+    dataframe: pd.DataFrame, columns: list[str]
+) -> pd.DataFrame:
+    """Fix European number format in specified columns using _fix_number."""
+    for col in columns:
+        if col in dataframe.columns:
+            dataframe[col] = dataframe[col].apply(_fix_number)
+    return dataframe
+
+
 def get_traffic_crashes():
     dataframe = _load_and_validate(TRAFFIC_CRASHES_CSV)
     dataframe = _strip_thousands_separators(dataframe, ["LANE_CNT"])
@@ -49,6 +100,8 @@ def get_traffic_crashes():
 
 def get_crash_people():
     dataframe = _load_and_validate(TRAFFIC_CRASHES_PEOPLE_CSV)
+    # Fix European decimal separator in BAC value column
+    dataframe = _fix_decimal_separator(dataframe, ["BAC_RESULT VALUE"])
     return TrafficCrashesPeopleSchema.validate(dataframe)
 
 
@@ -64,7 +117,12 @@ def get_traffic_tracker():
 
 def get_weather_stations():
     dataframe = _load_and_validate(WEATHER_STATIONS_CSV)
-    dataframe = _strip_thousands_separators(
-        dataframe, ["Total Rain", "Solar Radiation"]
-    )
+    # Fix European number format in numeric columns
+    numeric_cols = [
+        "Air Temperature", "Wet Bulb Temperature", "Humidity",
+        "Rain Intensity", "Interval Rain", "Total Rain",
+        "Wind Direction", "Wind Speed", "Maximum Wind Speed",
+        "Barometric Pressure", "Solar Radiation", "Battery Life", "Heading",
+    ]
+    dataframe = _fix_european_number_format(dataframe, numeric_cols)
     return WeatherStationsSchema.validate(dataframe)
