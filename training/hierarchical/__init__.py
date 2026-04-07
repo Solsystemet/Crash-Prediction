@@ -31,25 +31,60 @@ from training.hierarchical.structure import (
     get_multiclass_indices,
 )
 from training.hierarchical.base import HierarchicalClassifierBase
-from training.hierarchical.tree_classifier import HierarchicalTreeClassifier
+from training.hierarchical.tree_classifier import (
+    HierarchicalTreeClassifier,
+    save_hierarchical_model,
+    load_hierarchical_model,
+)
 from training.hierarchical.neural_classifier import HierarchicalNeuralClassifier
 from training.hierarchical.evaluation import evaluate_hierarchical
+
+# Simplified 3-class system
+from training.hierarchical.config import SimplifiedTreeConfig
+from training.hierarchical.simplified_targets import (
+    SimplifiedSeverity,
+    SimplifiedTargets,
+    SIMPLIFIED_CLASS_NAMES,
+    prepare_simplified_targets,
+    map_simplified_predictions,
+)
+from training.hierarchical.simplified_classifier import (
+    SimplifiedClassifierBase,
+    SimplifiedTreeClassifier,
+    save_simplified_model,
+    load_simplified_model,
+)
 
 __all__ = [
     # Configs
     "HierarchicalConfig",
     "TreeHierarchicalConfig",
     "NeuralHierarchicalConfig",
-    # Structure
+    "SimplifiedTreeConfig",
+    # Structure (5-class hierarchical)
     "HierarchyLevel",
     "HierarchicalTargets",
     "SEVERITY_CLASS_ORDER",
     "prepare_hierarchical_targets",
     "get_multiclass_indices",
-    # Classifiers
+    # Structure (3-class simplified)
+    "SimplifiedSeverity",
+    "SimplifiedTargets",
+    "SIMPLIFIED_CLASS_NAMES",
+    "prepare_simplified_targets",
+    "map_simplified_predictions",
+    # Classifiers (hierarchical)
     "HierarchicalClassifierBase",
     "HierarchicalTreeClassifier",
     "HierarchicalNeuralClassifier",
+    # Classifiers (simplified)
+    "SimplifiedClassifierBase",
+    "SimplifiedTreeClassifier",
+    # Save/Load utilities
+    "save_simplified_model",
+    "load_simplified_model",
+    "save_hierarchical_model",
+    "load_hierarchical_model",
     # Evaluation
     "evaluate_hierarchical",
 ]

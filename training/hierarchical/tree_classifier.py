@@ -244,6 +244,98 @@ class HierarchicalTreeClassifier(HierarchicalClassifierBase):
         return l1_proba, l2_proba, l25_proba, l3_proba
 
 
+def save_hierarchical_model(clf: HierarchicalTreeClassifier, path: str) -> None:
+    """Save a trained HierarchicalTreeClassifier to disk.
+
+    Saves the L1, L2, L2.5, and L3 models, thresholds, and feature columns.
+
+    Args:
+        clf: Trained HierarchicalTreeClassifier.
+        path: Path to save the model (will create a directory).
+    """
+    import joblib
+    from pathlib import Path
+
+    save_dir = Path(path)
+    save_dir.mkdir(parents=True, exist_ok=True)
+
+    # Save models
+    if clf.l1_model is not None:
+        joblib.dump(clf.l1_model, save_dir / "l1_model.joblib")
+    if clf.l2_model is not None:
+        joblib.dump(clf.l2_model, save_dir / "l2_model.joblib")
+    if clf.l25_model is not None:
+        joblib.dump(clf.l25_model, save_dir / "l25_model.joblib")
+    if clf.l3_model is not None:
+        joblib.dump(clf.l3_model, save_dir / "l3_model.joblib")
+
+    # Save metadata
+    metadata = {
+        "l1_threshold": clf.l1_threshold,
+        "l2_threshold": clf.l2_threshold,
+        "l25_threshold": clf.l25_threshold,
+        "l3_threshold": clf.l3_threshold,
+        "feature_cols": clf.feature_cols,
+        "config": {
+            "l1_model": clf.config.l1_model,
+            "l2_model": clf.config.l2_model,
+            "l25_model": clf.config.l25_model,
+            "l3_model": clf.config.l3_model,
+            "n_estimators": clf.config.n_estimators,
+            "max_depth": clf.config.max_depth,
+        },
+    }
+    joblib.dump(metadata, save_dir / "metadata.joblib")
+
+    logger.info(f"Saved hierarchical model to {save_dir}")
+
+
+def load_hierarchical_model(path: str) -> HierarchicalTreeClassifier:
+    """Load a trained HierarchicalTreeClassifier from disk.
+
+    Args:
+        path: Path to the saved model directory.
+
+    Returns:
+        Loaded HierarchicalTreeClassifier ready for inference.
+    """
+    import joblib
+    from pathlib import Path
+
+    load_dir = Path(path)
+
+    # Load metadata
+    metadata = joblib.load(load_dir / "metadata.joblib")
+
+    # Create config and classifier
+    config = TreeHierarchicalConfig(
+        l1_model=metadata["config"]["l1_model"],
+        l2_model=metadata["config"]["l2_model"],
+        l25_model=metadata["config"]["l25_model"],
+        l3_model=metadata["config"]["l3_model"],
+        n_estimators=metadata["config"]["n_estimators"],
+        max_depth=metadata["config"]["max_depth"],
+    )
+    clf = HierarchicalTreeClassifier(config)
+    clf.feature_cols = metadata["feature_cols"]
+    clf.l1_threshold = metadata["l1_threshold"]
+    clf.l2_threshold = metadata["l2_threshold"]
+    clf.l25_threshold = metadata["l25_threshold"]
+    clf.l3_threshold = metadata["l3_threshold"]
+
+    # Load models
+    clf.l1_model = joblib.load(load_dir / "l1_model.joblib")
+    if (load_dir / "l2_model.joblib").exists():
+        clf.l2_model = joblib.load(load_dir / "l2_model.joblib")
+    if (load_dir / "l25_model.joblib").exists():
+        clf.l25_model = joblib.load(load_dir / "l25_model.joblib")
+    if (load_dir / "l3_model.joblib").exists():
+        clf.l3_model = joblib.load(load_dir / "l3_model.joblib")
+
+    logger.info(f"Loaded hierarchical model from {load_dir}")
+    return clf
+
+
 def _create_tree_model(
     model_type: str,
     n_estimators: int = 200,
