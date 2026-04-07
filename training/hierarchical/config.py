@@ -65,10 +65,10 @@ class TreeHierarchicalConfig(HierarchicalConfig):
     """
 
     # Model types per level
-    l1_model: Literal["rf", "xgb", "et"] = "xgb"
-    l2_model: Literal["rf", "xgb", "et"] = "xgb"
-    l25_model: Literal["rf", "xgb", "et"] = "xgb"
-    l3_model: Literal["rf", "xgb", "et"] = "xgb"
+    l1_model: Literal["rf", "xgb", "et", "lgbm"] = "lgbm"
+    l2_model: Literal["rf", "xgb", "et", "lgbm"] = "lgbm"
+    l25_model: Literal["rf", "xgb", "et", "lgbm"] = "lgbm"
+    l3_model: Literal["rf", "xgb", "et", "lgbm"] = "lgbm"
 
     # SMOTE sampling strategies (ratio of minority to majority)
     l1_sampling_strategy: float = 0.5

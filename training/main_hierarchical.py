@@ -111,6 +111,7 @@ def prepare_features(df: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
         "using_seatbelt_mean",
         "cell_phone_any",
         "bac_positive_any",
+        "bac_clean_max",
         # CRASH_TYPE directly encodes injury!
         "CRASH_TYPE",
         "REPORT_TYPE",
