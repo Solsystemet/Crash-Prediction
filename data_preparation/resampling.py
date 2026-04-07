@@ -117,33 +117,34 @@ def apply_resampling(
         effective_k = 1
 
     # Select resampling method
-    if strategy == "smote":
-        sampler = SMOTE(
-            random_state=random_state,
-            k_neighbors=effective_k,
-        )
-    elif strategy == "borderline":
-        sampler = BorderlineSMOTE(
-            random_state=random_state,
-            k_neighbors=effective_k,
-        )
-    elif strategy == "adasyn":
-        sampler = ADASYN(
-            random_state=random_state,
-            n_neighbors=effective_k,
-        )
-    elif strategy == "smoteenn":
-        sampler = SMOTEENN(
-            random_state=random_state,
-            smote=SMOTE(random_state=random_state, k_neighbors=effective_k),
-        )
-    elif strategy == "smotetomek":
-        sampler = SMOTETomek(
-            random_state=random_state,
-            smote=SMOTE(random_state=random_state, k_neighbors=effective_k),
-        )
-    else:
-        raise ValueError(f"Unknown resampling strategy: {strategy}")
+    match strategy:
+        case "smote":
+            sampler = SMOTE(
+                random_state=random_state,
+                k_neighbors=effective_k,
+            )
+        case "borderline":
+            sampler = BorderlineSMOTE(
+                random_state=random_state,
+                k_neighbors=effective_k,
+            )
+        case "adasyn":
+            sampler = ADASYN(
+                random_state=random_state,
+                n_neighbors=effective_k,
+            )
+        case "smoteenn":
+            sampler = SMOTEENN(
+                random_state=random_state,
+                smote=SMOTE(random_state=random_state, k_neighbors=effective_k),
+            )
+        case "smotetomek":
+            sampler = SMOTETomek(
+                random_state=random_state,
+                smote=SMOTE(random_state=random_state, k_neighbors=effective_k),
+            )
+        case _:
+            raise ValueError(f"Unknown resampling strategy: {strategy}")
 
     # Apply resampling
     X_resampled, y_resampled = sampler.fit_resample(X, y)

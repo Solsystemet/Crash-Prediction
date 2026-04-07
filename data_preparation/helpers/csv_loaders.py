@@ -52,40 +52,43 @@ def _fix_decimal_separator(
     return dataframe
 
 
+def _fix_number(val) -> str | None:
+    """Normalize a numeric string to standard decimal format.
+    
+    Handles cases like:
+    - "1.056,1" -> "1056.1" (European: dot thousands, comma decimal)
+    - "1.056.1" -> "1056.1" (malformed with multiple dots)
+    - "4,00" -> "4.00" (just comma decimal)
+    - Single dot with no comma: unchanged (already correct)
+    """
+    s = str(val).strip()
+    if s == "nan" or s == "None" or s == "":
+        return None
+    
+    dots = s.count(".")
+    commas = s.count(",")
+    
+    if dots > 1:
+        # Multiple dots: remove all but last (e.g., "1.056.1" -> "1056.1")
+        parts = s.rsplit(".", 1)
+        s = parts[0].replace(".", "") + "." + parts[1]
+    elif dots == 1 and commas == 1:
+        # European format: "1.056,1" -> "1056.1"
+        s = s.replace(".", "").replace(",", ".")
+    elif commas == 1 and dots == 0:
+        # Just comma decimal: "4,00" -> "4.00"
+        s = s.replace(",", ".")
+    # If just one dot and no comma, assume it's already correct
+    return s
+
+
 def _fix_european_number_format(
     dataframe: pd.DataFrame, columns: list[str]
 ) -> pd.DataFrame:
-    """Fix European number format (dot as thousands, comma as decimal).
-    
-    Handles cases like:
-    - "1.056,1" -> "1056.1" (dot thousands, comma decimal)
-    - "1.056.1" -> "1056.1" (malformed with multiple dots)
-    - "4,00" -> "4.00" (just comma decimal)
-    """
+    """Fix European number format in specified columns using _fix_number."""
     for col in columns:
         if col in dataframe.columns:
-            def fix_number(val):
-                s = str(val).strip()
-                if s == "nan" or s == "None" or s == "":
-                    return None
-                # Count dots and commas
-                dots = s.count(".")
-                commas = s.count(",")
-                
-                if dots > 1:
-                    # Multiple dots: remove all but last (e.g., "1.056.1" -> "1056.1")
-                    parts = s.rsplit(".", 1)
-                    s = parts[0].replace(".", "") + "." + parts[1]
-                elif dots == 1 and commas == 1:
-                    # European format: "1.056,1" -> "1056.1"
-                    s = s.replace(".", "").replace(",", ".")
-                elif commas == 1 and dots == 0:
-                    # Just comma decimal: "4,00" -> "4.00"
-                    s = s.replace(",", ".")
-                # If just one dot and no comma, assume it's already correct
-                return s
-            
-            dataframe[col] = dataframe[col].apply(fix_number)
+            dataframe[col] = dataframe[col].apply(_fix_number)
     return dataframe
 
 
