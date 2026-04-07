@@ -9,6 +9,7 @@ import logging
 
 import numpy as np
 from imblearn.over_sampling import BorderlineSMOTE
+from lightgbm import LGBMClassifier
 from sklearn.ensemble import ExtraTreesClassifier, RandomForestClassifier
 from xgboost import XGBClassifier
 
@@ -43,10 +44,10 @@ class HierarchicalTreeClassifier(HierarchicalClassifierBase):
         self.config: TreeHierarchicalConfig = config
 
         # Level models (created during fit)
-        self.l1_model: RandomForestClassifier | XGBClassifier | ExtraTreesClassifier | None = None
-        self.l2_model: RandomForestClassifier | XGBClassifier | ExtraTreesClassifier | None = None
-        self.l25_model: RandomForestClassifier | XGBClassifier | ExtraTreesClassifier | None = None
-        self.l3_model: RandomForestClassifier | XGBClassifier | ExtraTreesClassifier | None = None
+        self.l1_model: RandomForestClassifier | XGBClassifier | ExtraTreesClassifier | LGBMClassifier | None = None
+        self.l2_model: RandomForestClassifier | XGBClassifier | ExtraTreesClassifier | LGBMClassifier | None = None
+        self.l25_model: RandomForestClassifier | XGBClassifier | ExtraTreesClassifier | LGBMClassifier | None = None
+        self.l3_model: RandomForestClassifier | XGBClassifier | ExtraTreesClassifier | LGBMClassifier | None = None
 
     def fit(
         self,
@@ -249,11 +250,11 @@ def _create_tree_model(
     max_depth: int = 15,
     n_jobs: int = -1,
     scale_pos_weight: float = 1.0,
-) -> RandomForestClassifier | XGBClassifier | ExtraTreesClassifier:
+) -> RandomForestClassifier | XGBClassifier | ExtraTreesClassifier | LGBMClassifier:
     """Create a tree ensemble classifier.
 
     Args:
-        model_type: One of 'rf', 'xgb', 'et'.
+        model_type: One of 'rf', 'xgb', 'et', 'lgbm'.
         n_estimators: Number of trees.
         max_depth: Maximum tree depth.
         n_jobs: Parallel jobs (-1 for all cores).
@@ -287,6 +288,16 @@ def _create_tree_model(
             class_weight="balanced",
             n_jobs=n_jobs,
             random_state=42,
+        )
+    elif model_type == "lgbm":
+        return LGBMClassifier(
+            n_estimators=n_estimators,
+            max_depth=max_depth,
+            scale_pos_weight=scale_pos_weight,
+            learning_rate=0.1,
+            n_jobs=n_jobs,
+            random_state=42,
+            verbose=-1,
         )
     else:
         raise ValueError(f"Unknown model type: {model_type}")
