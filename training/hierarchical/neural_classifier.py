@@ -208,14 +208,31 @@ class HierarchicalNeuralClassifier(HierarchicalClassifierBase):
         n_pos = np.sum(y_train == 1)
         logger.info(f"Class distribution: negative={n_neg}, positive={n_pos}")
 
-        # Create model
+        model, criterion = self._create_model_and_criterion(num_features, n_neg, n_pos)
+        optimizer = Adam(model.parameters(), lr=self.config.learning_rate)
+        train_loader, val_loader = self._create_data_loaders(X_train, y_train, X_val, y_val)
+
+        history, best_model_state = self._run_training_loop(
+            model, criterion, optimizer, train_loader, val_loader
+        )
+
+        # Restore best model
+        if best_model_state is not None:
+            model.load_state_dict(best_model_state)
+            logger.info(f"Restored best model from epoch {history.best_epoch + 1}")
+
+        return model, history
+
+    def _create_model_and_criterion(
+        self, num_features: int, n_neg: int, n_pos: int
+    ) -> tuple[BinaryMLP, nn.BCEWithLogitsLoss]:
+        """Create model and loss function with optional class weighting."""
         model = BinaryMLP(
             num_features=num_features,
             hidden_sizes=self.config.hidden_sizes,
             dropout=self.config.dropout,
         ).to(self.device)
 
-        # Compute class weight for positive class
         pos_weight = torch.tensor([n_neg / n_pos if n_pos > 0 else 1.0]).to(self.device)
         if self.config.use_class_weights:
             logger.info(f"Using positive class weight: {pos_weight.item():.2f}")
@@ -223,9 +240,16 @@ class HierarchicalNeuralClassifier(HierarchicalClassifierBase):
         else:
             criterion = nn.BCEWithLogitsLoss()
 
-        optimizer = Adam(model.parameters(), lr=self.config.learning_rate)
+        return model, criterion
 
-        # Create data loaders
+    def _create_data_loaders(
+        self,
+        X_train: np.ndarray,
+        y_train: np.ndarray,
+        X_val: np.ndarray | None,
+        y_val: np.ndarray | None,
+    ) -> tuple[DataLoader, DataLoader | None]:
+        """Create train and optional validation data loaders."""
         train_dataset = TensorDataset(
             torch.FloatTensor(X_train),
             torch.FloatTensor(y_train),
@@ -248,7 +272,57 @@ class HierarchicalNeuralClassifier(HierarchicalClassifierBase):
                 shuffle=False,
             )
 
-        # Training loop
+        return train_loader, val_loader
+
+    def _train_epoch(
+        self,
+        model: BinaryMLP,
+        criterion: nn.BCEWithLogitsLoss,
+        optimizer: Adam,
+        train_loader: DataLoader,
+    ) -> float:
+        """Run one training epoch and return average loss."""
+        model.train()
+        train_loss = 0.0
+        for X_batch, y_batch in train_loader:
+            X_batch, y_batch = X_batch.to(self.device), y_batch.to(self.device)
+
+            optimizer.zero_grad()
+            logits = model(X_batch)
+            loss = criterion(logits, y_batch)
+            loss.backward()
+            optimizer.step()
+
+            train_loss += loss.item() * len(X_batch)
+
+        return train_loss / len(train_loader.dataset)
+
+    def _validate_epoch(
+        self,
+        model: BinaryMLP,
+        criterion: nn.BCEWithLogitsLoss,
+        val_loader: DataLoader,
+    ) -> float:
+        """Run validation and return average loss."""
+        model.eval()
+        val_loss = 0.0
+        with torch.no_grad():
+            for X_batch, y_batch in val_loader:
+                X_batch, y_batch = X_batch.to(self.device), y_batch.to(self.device)
+                logits = model(X_batch)
+                loss = criterion(logits, y_batch)
+                val_loss += loss.item() * len(X_batch)
+        return val_loss / len(val_loader.dataset)
+
+    def _run_training_loop(
+        self,
+        model: BinaryMLP,
+        criterion: nn.BCEWithLogitsLoss,
+        optimizer: Adam,
+        train_loader: DataLoader,
+        val_loader: DataLoader | None,
+    ) -> tuple[LevelTrainingHistory, dict | None]:
+        """Run training loop with early stopping. Returns history and best model state."""
         history = LevelTrainingHistory(
             train_losses=[],
             val_losses=[],
@@ -260,36 +334,12 @@ class HierarchicalNeuralClassifier(HierarchicalClassifierBase):
         patience_counter = 0
 
         for epoch in range(self.config.epochs):
-            # Train
-            model.train()
-            train_loss = 0.0
-            for X_batch, y_batch in train_loader:
-                X_batch, y_batch = X_batch.to(self.device), y_batch.to(self.device)
-
-                optimizer.zero_grad()
-                logits = model(X_batch)
-                loss = criterion(logits, y_batch)
-                loss.backward()
-                optimizer.step()
-
-                train_loss += loss.item() * len(X_batch)
-
-            train_loss /= len(train_dataset)
+            train_loss = self._train_epoch(model, criterion, optimizer, train_loader)
             history.train_losses.append(train_loss)
 
-            # Validate
             val_loss = train_loss  # Default if no validation set
             if val_loader is not None:
-                model.eval()
-                val_loss = 0.0
-                with torch.no_grad():
-                    for X_batch, y_batch in val_loader:
-                        X_batch, y_batch = X_batch.to(self.device), y_batch.to(self.device)
-                        logits = model(X_batch)
-                        loss = criterion(logits, y_batch)
-                        val_loss += loss.item() * len(X_batch)
-                val_loss /= len(val_loader.dataset)
-
+                val_loss = self._validate_epoch(model, criterion, val_loader)
             history.val_losses.append(val_loss)
 
             # Early stopping check
@@ -311,12 +361,7 @@ class HierarchicalNeuralClassifier(HierarchicalClassifierBase):
                 logger.info(f"Early stopping at epoch {epoch + 1}")
                 break
 
-        # Restore best model
-        if best_model_state is not None:
-            model.load_state_dict(best_model_state)
-            logger.info(f"Restored best model from epoch {history.best_epoch + 1}")
-
-        return model, history
+        return history, best_model_state
 
     def predict_proba(
         self, X: np.ndarray
