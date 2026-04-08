@@ -20,6 +20,7 @@ dependencies = [
     "torch>=2.5.0",
     "torchvision>=0.20.0",
     "xgboost>=2.1.0",
+    "lightgbm>=4.0.0",
 ]
 
 [dependency-groups]
