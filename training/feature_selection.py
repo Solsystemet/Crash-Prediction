@@ -3,18 +3,29 @@
 This module implements hybrid feature selection combining:
 - Correlation-based Feature Selection (CFS): Remove highly correlated features
 - Recursive Feature Elimination (RFE): Iteratively remove least important features
+- Importance-based filtering: Remove features based on pre-computed importance CSV
 
 Research shows that removing noise and redundant features can significantly
 boost accuracy and computational efficiency.
 """
 
+import logging
+from pathlib import Path
+from typing import Literal
+
 import numpy as np
+import pandas as pd
 from numpy.typing import NDArray
 from dataclasses import dataclass
 
 from sklearn.feature_selection import RFE, RFECV
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import StratifiedKFold
+
+logger = logging.getLogger(__name__)
+
+# Default path to feature importance CSV (relative to project root)
+DEFAULT_IMPORTANCE_CSV = Path(__file__).parent.parent / "models" / "plots" / "feature_importance.csv"
 
 
 @dataclass
@@ -316,3 +327,140 @@ def apply_feature_selection(
         Filtered feature array.
     """
     return X[:, result.selected_indices]
+
+
+# =============================================================================
+# Importance-based Feature Filtering (from CSV)
+# =============================================================================
+
+@dataclass
+class ImportanceFilterResult:
+    """Result of importance-based feature filtering.
+
+    Attributes:
+        kept_features: List of feature names that were kept.
+        dropped_features: List of feature names that were dropped.
+        n_original: Number of features before filtering.
+        n_kept: Number of features after filtering.
+        missing_features: Features in data but not in importance CSV.
+    """
+
+    kept_features: list[str]
+    dropped_features: list[str]
+    n_original: int
+    n_kept: int
+    missing_features: list[str]
+
+
+def load_feature_importance(
+    csv_path: str | Path | None = None,
+) -> pd.DataFrame:
+    """Load feature importance data from CSV.
+
+    Args:
+        csv_path: Path to the feature_importance.csv file.
+            If None, uses the default path.
+
+    Returns:
+        DataFrame with columns: feature_name, importance, recommendation, etc.
+
+    Raises:
+        FileNotFoundError: If the CSV file doesn't exist.
+    """
+    if csv_path is None:
+        csv_path = DEFAULT_IMPORTANCE_CSV
+
+    csv_path = Path(csv_path)
+    if not csv_path.exists():
+        raise FileNotFoundError(f"Feature importance CSV not found: {csv_path}")
+
+    df = pd.read_csv(csv_path)
+    required_cols = {"feature_name", "recommendation"}
+    if not required_cols.issubset(df.columns):
+        raise ValueError(f"CSV must contain columns: {required_cols}")
+
+    return df
+
+
+def filter_by_importance(
+    X_df: pd.DataFrame,
+    feature_cols: list[str],
+    mode: Literal["none", "drop-low", "drop-review"] = "drop-low",
+    importance_csv: str | Path | None = None,
+    verbose: bool = True,
+) -> tuple[pd.DataFrame, list[str], ImportanceFilterResult]:
+    """Filter features based on pre-computed importance recommendations.
+
+    Args:
+        X_df: Feature DataFrame.
+        feature_cols: List of feature column names.
+        mode: Filtering mode:
+            - "none": No filtering, return original data.
+            - "drop-low": Drop features marked as "DROP" in the CSV.
+            - "drop-review": Drop features marked as "DROP" or "REVIEW" in the CSV.
+        importance_csv: Path to importance CSV. Uses default if None.
+        verbose: Whether to log filtering details.
+
+    Returns:
+        Tuple of (filtered DataFrame, filtered feature list, ImportanceFilterResult).
+    """
+    if mode == "none":
+        result = ImportanceFilterResult(
+            kept_features=feature_cols.copy(),
+            dropped_features=[],
+            n_original=len(feature_cols),
+            n_kept=len(feature_cols),
+            missing_features=[],
+        )
+        return X_df, feature_cols, result
+
+    # Load importance data
+    importance_df = load_feature_importance(importance_csv)
+    importance_map = dict(zip(importance_df["feature_name"], importance_df["recommendation"]))
+
+    # Categorize features
+    kept_features = []
+    dropped_features = []
+    missing_features = []
+
+    # Determine which recommendations to drop based on mode
+    drop_recommendations = {"DROP"}
+    if mode == "drop-review":
+        drop_recommendations.add("REVIEW")
+
+    for col in feature_cols:
+        recommendation = importance_map.get(col)
+        if recommendation is None:
+            # Feature not in CSV - keep it by default with warning
+            missing_features.append(col)
+            kept_features.append(col)
+        elif recommendation in drop_recommendations:
+            dropped_features.append(col)
+        else:
+            # KEEP (or REVIEW when mode is drop-low) - retain
+            kept_features.append(col)
+
+    # Filter DataFrame
+    X_filtered = X_df[kept_features].copy()
+
+    result = ImportanceFilterResult(
+        kept_features=kept_features,
+        dropped_features=dropped_features,
+        n_original=len(feature_cols),
+        n_kept=len(kept_features),
+        missing_features=missing_features,
+    )
+
+    if verbose:
+        logger.info(f"Feature Importance Filter (mode={mode}):")
+        logger.info(f"  Original: {result.n_original} features")
+        logger.info(f"  Kept: {result.n_kept} features")
+        logger.info(f"  Dropped: {len(dropped_features)} features")
+        if dropped_features:
+            logger.info(f"  Dropped features: {dropped_features[:10]}")
+            if len(dropped_features) > 10:
+                logger.info(f"    ... and {len(dropped_features) - 10} more")
+        if missing_features:
+            logger.warning(f"  Features not in CSV (kept by default): {missing_features}")
+
+    return X_filtered, kept_features, result
