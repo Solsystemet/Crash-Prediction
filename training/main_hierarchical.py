@@ -56,12 +56,53 @@ from training.hierarchical import (
     prepare_hierarchical_targets,
     evaluate_hierarchical,
 )
+from training.hierarchical.tree_classifier import save_hierarchical_model
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger(__name__)
+
+
+def stratified_sample_with_fatal(
+    df: pd.DataFrame,
+    sample_size: int,
+    random_state: int = 42,
+) -> pd.DataFrame:
+    """Sample dataset ensuring FATAL cases are well-represented.
+
+    Takes ALL FATAL cases plus stratified sample of the rest to ensure
+    the L2.5 classifier has sufficient training data.
+
+    Args:
+        df: Full DataFrame with MOST_SEVERE_INJURY column.
+        sample_size: Target sample size.
+        random_state: Random seed for reproducibility.
+
+    Returns:
+        Sampled DataFrame with all FATAL cases included.
+    """
+    # Separate FATAL from rest
+    fatal_mask = df["MOST_SEVERE_INJURY"] == "FATAL"
+    fatal_df = df[fatal_mask]
+    other_df = df[~fatal_mask]
+
+    n_fatal = len(fatal_df)
+    n_other = sample_size - n_fatal
+
+    logger.info(f"  FATAL cases in full data: {n_fatal}")
+
+    if n_other > 0 and len(other_df) > n_other:
+        other_sample = other_df.sample(n=n_other, random_state=random_state)
+    else:
+        other_sample = other_df
+
+    result = pd.concat([fatal_df, other_sample], ignore_index=True)
+    logger.info(f"  Stratified sample: {n_fatal} FATAL + {len(other_sample)} other = {len(result)}")
+
+    # Shuffle to avoid any ordering effects
+    return result.sample(frac=1, random_state=random_state).reset_index(drop=True)
 
 
 def prepare_features(df: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
@@ -111,6 +152,7 @@ def prepare_features(df: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
         "using_seatbelt_mean",
         "cell_phone_any",
         "bac_positive_any",
+        "bac_clean_max",
         # CRASH_TYPE directly encodes injury!
         "CRASH_TYPE",
         "REPORT_TYPE",
@@ -193,10 +235,9 @@ def run_hierarchical_pipeline(
     df = triple_merge()
     logger.info(f"Merged dataset shape: {df.shape}")
 
-    # Sample if specified
+    # Sample if specified - use stratified sampling to ensure FATAL representation
     if config.sample_size is not None and len(df) > config.sample_size:
-        df = df.sample(n=config.sample_size, random_state=config.random_state)
-        logger.info(f"Sampled to {len(df)} rows")
+        df = stratified_sample_with_fatal(df, config.sample_size, config.random_state)
 
     # Add binary targets
     logger.info("\n[2/6] Engineering features and adding targets...")
@@ -302,6 +343,12 @@ def run_hierarchical_pipeline(
             new_val = results[metric]
             improvement = (new_val - old_val) / old_val * 100 if old_val > 0 else 0
             logger.info(f"{metric}: {new_val:.4f} (was {old_val:.4f}, {improvement:+.1f}%)")
+
+    # Save model (only for tree-based classifiers)
+    if model_type == "tree":
+        model_dir = PROJECT_ROOT / "models" / "trained" / "hierarchical_5class"
+        save_hierarchical_model(clf, str(model_dir))
+        logger.info(f"Model saved to {model_dir}")
 
     return results
 
