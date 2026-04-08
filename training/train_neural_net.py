@@ -3,7 +3,7 @@
 This module provides functions for training and evaluating the MLP model.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
@@ -14,6 +14,7 @@ from torch.utils.data import DataLoader
 
 from data_preparation.tensor_dataset import CrashTensorDataset
 from training.models import CrashPredictionMLP
+from training.device_utils import get_device_for_config
 
 
 @dataclass
@@ -31,7 +32,7 @@ class TrainingConfig:
     epochs: int = 30
     learning_rate: float = 1e-3
     early_stopping_patience: int = 5
-    device: str = "cuda" if torch.cuda.is_available() else "cpu"
+    device: str = field(default_factory=get_device_for_config)
     use_class_weights: bool = True
 
 
@@ -54,7 +55,9 @@ class TrainingHistory:
     best_epoch: int
 
 
-def compute_class_weights(dataset: CrashTensorDataset, num_classes: int) -> torch.Tensor:
+def compute_class_weights(
+    dataset: CrashTensorDataset, num_classes: int
+) -> torch.Tensor:
     """Compute class weights inversely proportional to class frequency.
 
     Args:
@@ -66,19 +69,19 @@ def compute_class_weights(dataset: CrashTensorDataset, num_classes: int) -> torc
     """
     labels = dataset.labels.numpy()
     classes, counts = np.unique(labels, return_counts=True)
-    
+
     # Inverse frequency weighting
     weights = 1.0 / counts
     # Normalize so weights sum to num_classes present in data
     weights = weights / weights.sum() * len(classes)
-    
+
     # Create full weight tensor for all classes (some may not be in training data)
     # Use weight of 1.0 for missing classes
     full_weights = np.ones(num_classes)
     for cls, weight in zip(classes, weights):
         if cls < num_classes:
             full_weights[cls] = weight
-    
+
     return torch.FloatTensor(full_weights)
 
 
@@ -142,7 +145,9 @@ def train_neural_network(
 
     if verbose:
         print(f"\nTraining Neural Network on {device}")
-        print(f"{'Epoch':<8} {'Train Loss':<12} {'Val Loss':<12} {'Train Acc':<12} {'Val Acc':<12}")
+        print(
+            f"{'Epoch':<8} {'Train Loss':<12} {'Val Loss':<12} {'Train Acc':<12} {'Val Acc':<12}"
+        )
         print("-" * 56)
 
     for epoch in range(config.epochs):
@@ -199,7 +204,9 @@ def train_neural_network(
         history.val_accuracies.append(val_acc)
 
         if verbose:
-            print(f"{epoch + 1:<8} {train_loss:<12.4f} {val_loss:<12.4f} {train_acc:<12.4f} {val_acc:<12.4f}")
+            print(
+                f"{epoch + 1:<8} {train_loss:<12.4f} {val_loss:<12.4f} {train_acc:<12.4f} {val_acc:<12.4f}"
+            )
 
         # Early stopping check
         if val_loss < best_val_loss:
