@@ -57,6 +57,7 @@ from training.hierarchical import (
     evaluate_hierarchical,
 )
 from training.hierarchical.tree_classifier import save_hierarchical_model
+from training.feature_selection import filter_by_importance
 
 logging.basicConfig(
     level=logging.INFO,
@@ -207,12 +208,14 @@ def prepare_features(df: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
 def run_hierarchical_pipeline(
     model_type: Literal["tree", "neural"] = "tree",
     sample_size: int | None = None,
+    feature_filter: str = "drop-low",
 ) -> dict:
     """Run the full hierarchical classification pipeline.
 
     Args:
         model_type: Which classifier to use ('tree' or 'neural').
         sample_size: Optional limit on dataset size for faster experimentation.
+        feature_filter: Feature filtering mode ("none" or "drop-low").
 
     Returns:
         Dictionary of evaluation results.
@@ -256,7 +259,13 @@ def run_hierarchical_pipeline(
     # Prepare features
     logger.info("\n[3/6] Preparing feature matrix...")
     X_df, feature_cols = prepare_features(df)
-    logger.info(f"Feature matrix shape: {X_df.shape}")
+    logger.info(f"Feature matrix shape (before filter): {X_df.shape}")
+
+    # Apply importance-based filtering
+    X_df, feature_cols, filter_result = filter_by_importance(
+        X_df, feature_cols, mode=feature_filter
+    )
+    logger.info(f"Feature matrix shape (after filter): {X_df.shape}")
     logger.info(f"Features: {feature_cols[:10]}... ({len(feature_cols)} total)")
 
     X = X_df.values
@@ -370,12 +379,20 @@ if __name__ == "__main__":
         default=None,
         help="Sample size for faster experimentation (default: use all data)",
     )
+    parser.add_argument(
+        "--feature-filter",
+        type=str,
+        choices=["none", "drop-low", "drop-review"],
+        default="drop-low",
+        help="Feature filtering mode: 'none' (all features), 'drop-low' (drop DROP features), 'drop-review' (drop DROP + REVIEW features). Default: drop-low",
+    )
 
     args = parser.parse_args()
 
     results = run_hierarchical_pipeline(
         model_type=args.model,
         sample_size=args.sample,
+        feature_filter=args.feature_filter,
     )
 
     # Print final summary
