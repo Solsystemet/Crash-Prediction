@@ -221,29 +221,51 @@ class SimplifiedTreeClassifier(SimplifiedClassifierBase):
             Self for method chaining.
         """
         # Level 1: INJURY vs NO_INJURY (all samples)
-        logger.info("=" * 60)
-        logger.info("L1 (INJURY): Training classifier")
-        logger.info("=" * 60)
-        self.l1_model = self._fit_level(
-            X_train,
-            targets.y_injury,
-            model_type=self.l1_model_type,
-            sampling_strategy=self.l1_sampling_strategy,
-            weight_multiplier=1.0,
-        )
+        n_injury_classes = len(np.unique(targets.y_injury))
+        
+        if n_injury_classes < 2:
+            # Only one class present - skip L1 training
+            logger.info("=" * 60)
+            logger.info(f"L1 (INJURY): Skipping - only {n_injury_classes} class present")
+            logger.info("=" * 60)
+            self.l1_model = None
+            self._l1_default = int(np.mean(targets.y_injury) >= 0.5)
+        else:
+            logger.info("=" * 60)
+            logger.info("L1 (INJURY): Training classifier")
+            logger.info("=" * 60)
+            self.l1_model = self._fit_level(
+                X_train,
+                targets.y_injury,
+                model_type=self.l1_model_type,
+                sampling_strategy=self.l1_sampling_strategy,
+                weight_multiplier=1.0,
+            )
 
         # Level 2: SEVERE vs MINOR (injury samples only)
         injury_mask = targets.y_injury == 1
-        logger.info("=" * 60)
-        logger.info("L2 (SEVERE): Training classifier")
-        logger.info("=" * 60)
-        self.l2_model = self._fit_level(
-            X_train[injury_mask],
-            targets.y_severe[injury_mask],
-            model_type=self.l2_model_type,
-            sampling_strategy=self.l2_sampling_strategy,
-            weight_multiplier=self.l2_weight_multiplier,
-        )
+        y_severe_subset = targets.y_severe[injury_mask]
+        n_severe_classes = len(np.unique(y_severe_subset))
+        
+        if n_severe_classes < 2:
+            # Only one class present (no SEVERE or no MINOR) - skip L2
+            logger.info("=" * 60)
+            logger.info(f"L2 (SEVERE): Skipping - only {n_severe_classes} class present")
+            logger.info("=" * 60)
+            self.l2_model = None
+            # Store dominant class for fallback predictions
+            self._l2_default = int(np.mean(y_severe_subset) >= 0.5) if len(y_severe_subset) > 0 else 0
+        else:
+            logger.info("=" * 60)
+            logger.info("L2 (SEVERE): Training classifier")
+            logger.info("=" * 60)
+            self.l2_model = self._fit_level(
+                X_train[injury_mask],
+                y_severe_subset,
+                model_type=self.l2_model_type,
+                sampling_strategy=self.l2_sampling_strategy,
+                weight_multiplier=self.l2_weight_multiplier,
+            )
 
         return self
 
@@ -327,11 +349,21 @@ class SimplifiedTreeClassifier(SimplifiedClassifierBase):
         Returns:
             Tuple of (l1_proba, l2_proba) probability arrays.
         """
-        if self.l1_model is None:
-            raise RuntimeError("Model not fitted. Call fit() first.")
-
-        l1_proba = self.l1_model.predict_proba(X)[:, 1]
-        l2_proba = self.l2_model.predict_proba(X)[:, 1] if self.l2_model else np.full(len(X), 0.5)
+        # L1 predictions
+        if self.l1_model is not None:
+            l1_proba = self.l1_model.predict_proba(X)[:, 1]
+        else:
+            # No L1 model - use default prediction based on training data
+            default_val = getattr(self, '_l1_default', 0)
+            l1_proba = np.full(len(X), float(default_val))
+        
+        # L2 predictions
+        if self.l2_model is not None:
+            l2_proba = self.l2_model.predict_proba(X)[:, 1]
+        else:
+            # No L2 model - use default prediction based on training data
+            default_val = getattr(self, '_l2_default', 0)
+            l2_proba = np.full(len(X), float(default_val))
 
         return l1_proba, l2_proba
 
