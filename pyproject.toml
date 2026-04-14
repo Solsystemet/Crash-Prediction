@@ -21,6 +21,9 @@ dependencies = [
     "torchvision>=0.20.0",
     "xgboost>=2.1.0",
     "lightgbm>=4.0.0",
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.34.0",
+    "pydantic>=2.10.0",
 ]
 
 [dependency-groups]
@@ -32,7 +35,7 @@ dev = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["data_preparation", "models", "training"]
+packages = ["data_preparation", "models", "training", "api"]
 
 [tool.uv.sources]
 torch = { index = "pytorch-cu124" }
