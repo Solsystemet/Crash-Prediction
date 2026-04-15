@@ -25,7 +25,6 @@ class ModelInfo:
 
 
 # Registry of available models
-# This can be extended to support model selection dropdown in the future
 MODEL_REGISTRY: dict[str, ModelInfo] = {
     "simplified_3class": ModelInfo(
         name="Simplified 3-Class",
@@ -33,10 +32,36 @@ MODEL_REGISTRY: dict[str, ModelInfo] = {
         description="3-class severity prediction (NO_INJURY, MINOR, SEVERE)",
         model_type="simplified",
     ),
+    "hierarchical_5class": ModelInfo(
+        name="Hierarchical 5-Class",
+        path=MODELS_DIR / "hierarchical_5class",
+        description="5-class hierarchical severity prediction with detailed injury levels",
+        model_type="hierarchical",
+    ),
+    "simplified_zones": ModelInfo(
+        name="Zone-Based Severity",
+        path=MODELS_DIR / "simplified_zones",
+        description="Geographic zone-aware 3-class severity prediction",
+        model_type="zones",
+    ),
+    "regression_daily": ModelInfo(
+        name="Crash Count Regression",
+        path=MODELS_DIR / "regression_daily",
+        description="Predict expected number of crashes per day",
+        model_type="regression",
+    ),
 }
 
 # Default model to use
 DEFAULT_MODEL = "simplified_3class"
+
+# Model type to registry key mapping
+MODEL_TYPE_REGISTRY = {
+    "simplified": "simplified_3class",
+    "hierarchical": "hierarchical_5class",
+    "zones": "simplified_zones",
+    "regression": "regression_daily",
+}
 
 
 # Feature value options for categorical features
