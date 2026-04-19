@@ -20,8 +20,16 @@ from api.models import (
     FeatureOptionsResponse,
     ModelInfoResponse,
     HealthResponse,
+    AccuracyResponse,
+    MapDataResponse,
+    AccuracyMetrics,
+    ClassMetrics,
+    PredictionWithActual,
+    MapPrediction,
 )
 from api.prediction import predict, model_manager
+from api.accuracy_service import evaluate_accuracy, get_map_data
+from api.chicago_client import ChicagoAPIError
 
 logging.basicConfig(
     level=logging.INFO,
@@ -129,6 +137,132 @@ async def list_models():
         )
         for info in MODEL_REGISTRY.values()
     ]
+
+
+# ============================================================================
+# Accuracy Evaluation Endpoints
+# ============================================================================
+
+
+@app.get("/api/accuracy", response_model=AccuracyResponse, tags=["Accuracy"])
+async def get_accuracy(
+    days: int = 7,
+    max_crashes: int = 500,
+):
+    """Evaluate model accuracy on recent real crash data from Chicago.
+
+    Fetches recent crash data from the City of Chicago's open data portal,
+    runs predictions, and compares against actual outcomes.
+
+    Args:
+        days: Number of days back to fetch data (1, 7, 30, or 90)
+        max_crashes: Maximum number of crashes to evaluate (default 500)
+
+    Returns:
+        AccuracyResponse with metrics and individual predictions
+    """
+    # Validate days parameter
+    if days not in [1, 7, 30, 90]:
+        days = 7  # Default to 7 days if invalid
+
+    # Cap max_crashes to prevent excessive API calls
+    max_crashes = min(max(max_crashes, 10), 2000)
+
+    try:
+        result = evaluate_accuracy(days=days, max_crashes=max_crashes)
+
+        # Convert to response models
+        metrics = AccuracyMetrics(
+            overall_accuracy=result["metrics"]["overall_accuracy"],
+            sample_count=result["metrics"]["sample_count"],
+            per_class_metrics={
+                k: ClassMetrics(**v)
+                for k, v in result["metrics"]["per_class_metrics"].items()
+            },
+            confusion_matrix=result["metrics"]["confusion_matrix"],
+            class_labels=result["metrics"]["class_labels"],
+            time_range_days=result["metrics"]["time_range_days"],
+            computed_at=result["metrics"]["computed_at"],
+        )
+
+        predictions = [PredictionWithActual(**p) for p in result["predictions"]]
+
+        return AccuracyResponse(metrics=metrics, predictions=predictions)
+
+    except ChicagoAPIError as e:
+        logger.error(f"Chicago API error: {e}")
+        raise HTTPException(
+            status_code=503, detail=f"Failed to fetch data from Chicago API: {str(e)}"
+        )
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except Exception as e:
+        logger.exception("Accuracy evaluation error")
+        raise HTTPException(
+            status_code=500, detail=f"Accuracy evaluation failed: {str(e)}"
+        )
+
+
+@app.get("/api/accuracy/map", response_model=MapDataResponse, tags=["Accuracy"])
+async def get_accuracy_map_data(
+    days: int = 7,
+    max_crashes: int = 200,
+    filter: str | None = None,
+):
+    """Get prediction data formatted for map visualization.
+
+    Returns crash predictions with coordinates for displaying on a map.
+
+    Args:
+        days: Number of days back to fetch data
+        max_crashes: Maximum number of crashes (default 200 for map performance)
+        filter: Optional filter - 'correct', 'incorrect', or None for all
+
+    Returns:
+        MapDataResponse with prediction coordinates and summary counts
+    """
+    # Validate days parameter
+    if days not in [1, 7, 30, 90]:
+        days = 7
+
+    # Cap max_crashes for map performance
+    max_crashes = min(max(max_crashes, 10), 500)
+
+    # Parse filter parameter
+    filter_correct = None
+    if filter == "correct":
+        filter_correct = True
+    elif filter == "incorrect":
+        filter_correct = False
+
+    try:
+        map_data = get_map_data(
+            days=days,
+            max_crashes=max_crashes,
+            filter_correct=filter_correct,
+        )
+
+        # Convert to response model
+        predictions = [MapPrediction(**p) for p in map_data]
+
+        correct_count = sum(1 for p in predictions if p.is_correct)
+        incorrect_count = len(predictions) - correct_count
+
+        return MapDataResponse(
+            predictions=predictions,
+            total_count=len(predictions),
+            correct_count=correct_count,
+            incorrect_count=incorrect_count,
+        )
+
+    except ChicagoAPIError as e:
+        logger.error(f"Chicago API error: {e}")
+        raise HTTPException(
+            status_code=503, detail=f"Failed to fetch data from Chicago API: {str(e)}"
+        )
+    except Exception as e:
+        logger.exception("Map data error")
+        raise HTTPException(status_code=500, detail=f"Failed to get map data: {str(e)}")
 
 
 if __name__ == "__main__":
