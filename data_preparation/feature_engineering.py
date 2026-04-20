@@ -218,12 +218,22 @@ def add_interaction_features(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def add_severity_risk_features(df: pd.DataFrame) -> pd.DataFrame:
-    """Add features specifically predictive of severity.
+    """Add features specifically predictive of crash severity.
+
+    Research shows these factors strongly correlate with severe injuries:
+    - High speed limits (>= 35 mph significantly increases fatality risk)
+    - Intersection-related crashes
+    - Multi-vehicle crashes
+    - Head-on and pedestrian crash types
+    - Heavy damage indicators
 
     Creates:
-    - HIGH_SPEED_AREA: Posted speed limit >= 40 mph
+    - HIGH_SPEED_CRASH: Posted speed limit >= 35 mph
+    - VERY_HIGH_SPEED: Posted speed limit >= 45 mph
+    - INTERSECTION_CRASH: Crash at or near intersection
     - MULTI_VEHICLE: More than 2 vehicles involved
-    - PEDESTRIAN_INVOLVED: Any pedestrian in crash (from person types if available)
+    - HIGH_IMPACT_CRASH_TYPE: Crash type associated with severe injuries
+    - SEVERE_DAMAGE_INDICATOR: Heavy damage reported
 
     Args:
         df: DataFrame with crash data.
@@ -233,13 +243,64 @@ def add_severity_risk_features(df: pd.DataFrame) -> pd.DataFrame:
     """
     df = df.copy()
 
-    # High speed area
+    # High speed area - research shows 35+ mph significantly increases injury severity
     if "POSTED_SPEED_LIMIT" in df.columns:
-        df["HIGH_SPEED_AREA"] = (df["POSTED_SPEED_LIMIT"] >= 40).astype(int)
+        speed = pd.to_numeric(df["POSTED_SPEED_LIMIT"], errors="coerce").fillna(25)
+        df["HIGH_SPEED_CRASH"] = (speed >= 35).astype(int)
+        df["VERY_HIGH_SPEED"] = (speed >= 45).astype(int)
 
     # Multi-vehicle crash
     if "VEHICLE_COUNT" in df.columns:
         df["MULTI_VEHICLE"] = (df["VEHICLE_COUNT"] > 2).astype(int)
+    elif "NUM_UNITS" in df.columns:
+        df["MULTI_VEHICLE"] = (df["NUM_UNITS"] > 2).astype(int)
+
+    # Intersection-related crash (strongly associated with severe injuries)
+    if "INTERSECTION_RELATED_I" in df.columns:
+        # Column contains 'Y' for yes, NaN/blank otherwise
+        intersection_val = df["INTERSECTION_RELATED_I"].fillna("").str.upper()
+        df["INTERSECTION_CRASH"] = intersection_val.isin(["Y", "YES", "1"]).astype(int)
+
+    # High-impact crash types (head-on, pedestrian, fixed object)
+    if "FIRST_CRASH_TYPE" in df.columns:
+        crash_type = df["FIRST_CRASH_TYPE"].fillna("").str.upper()
+        high_impact_types = [
+            "HEAD ON",
+            "PEDESTRIAN",
+            "PEDALCYCLIST",
+            "FIXED OBJECT",
+            "OVERTURNED",
+            "TRAIN",
+        ]
+        df["HIGH_IMPACT_CRASH_TYPE"] = crash_type.apply(
+            lambda x: any(t in x for t in high_impact_types)
+        ).astype(int)
+
+    # Severe damage indicator
+    if "DAMAGE" in df.columns:
+        damage = df["DAMAGE"].fillna("").str.upper()
+        # "$500 OR LESS" typically means minor; "OVER $1500" suggests severe
+        df["SEVERE_DAMAGE_INDICATOR"] = damage.str.contains("OVER \\$1500|OVER 1500", regex=True).astype(int)
+
+    # Hit and run (often indicates higher speed / severity)
+    if "HIT_AND_RUN_I" in df.columns:
+        hit_run = df["HIT_AND_RUN_I"].fillna("").str.upper()
+        df["HIT_AND_RUN"] = hit_run.isin(["Y", "YES", "1"]).astype(int)
+
+    # Work zone (construction areas have different risk profiles)
+    if "WORK_ZONE_I" in df.columns:
+        work_zone = df["WORK_ZONE_I"].fillna("").str.upper()
+        df["WORK_ZONE_CRASH"] = work_zone.isin(["Y", "YES", "1"]).astype(int)
+
+    # Combined risk score (sum of risk factors)
+    risk_cols = [
+        "HIGH_SPEED_CRASH", "VERY_HIGH_SPEED", "INTERSECTION_CRASH",
+        "MULTI_VEHICLE", "HIGH_IMPACT_CRASH_TYPE", "SEVERE_DAMAGE_INDICATOR",
+        "HIT_AND_RUN", "WORK_ZONE_CRASH"
+    ]
+    existing_risk_cols = [c for c in risk_cols if c in df.columns]
+    if existing_risk_cols:
+        df["SEVERITY_RISK_SCORE"] = df[existing_risk_cols].sum(axis=1)
 
     return df
 

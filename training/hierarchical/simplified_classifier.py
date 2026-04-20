@@ -8,13 +8,17 @@ from __future__ import annotations
 
 import logging
 from abc import ABC, abstractmethod
+from typing import Literal
 
 import numpy as np
-from imblearn.over_sampling import BorderlineSMOTE
+from imblearn.over_sampling import ADASYN, BorderlineSMOTE
 from sklearn.metrics import precision_recall_curve
 from lightgbm import LGBMClassifier
 from sklearn.ensemble import ExtraTreesClassifier, RandomForestClassifier
 from xgboost import XGBClassifier
+
+# Resampling strategy type
+ResamplingMethod = Literal["borderline", "adasyn"]
 
 from training.hierarchical.simplified_targets import (
     SimplifiedTargets,
@@ -160,6 +164,9 @@ class SimplifiedTreeClassifier(SimplifiedClassifierBase):
     Uses separate tree ensemble models for:
     - L1: INJURY vs NO_INJURY (all samples)
     - L2: SEVERE vs MINOR (injury samples only)
+
+    Supports using a pre-trained global L2 model for better severe class detection
+    when per-zone samples are insufficient.
     """
 
     def __init__(
@@ -167,14 +174,16 @@ class SimplifiedTreeClassifier(SimplifiedClassifierBase):
         l1_model: str = "lgbm",
         l2_model: str = "lgbm",
         l1_sampling_strategy: float = 0.5,
-        l2_sampling_strategy: float = 0.7,
-        l2_weight_multiplier: float = 1.5,
+        l2_sampling_strategy: float = 1.0,  # Increased for better severe detection
+        l2_weight_multiplier: float = 3.0,  # Increased from 1.5 for better recall
+        l2_resampling_method: ResamplingMethod = "adasyn",  # ADASYN focuses on harder samples
         n_estimators: int = 200,
         max_depth: int = 15,
         n_jobs: int = -1,
         l1_threshold: float = 0.3,
         l2_threshold: float = 0.3,
         random_state: int = 42,
+        pretrained_l2_model: RandomForestClassifier | XGBClassifier | ExtraTreesClassifier | LGBMClassifier | None = None,
     ):
         """Initialize simplified tree classifier.
 
@@ -182,14 +191,17 @@ class SimplifiedTreeClassifier(SimplifiedClassifierBase):
             l1_model: Model type for L1 ('rf', 'xgb', 'et', 'lgbm').
             l2_model: Model type for L2.
             l1_sampling_strategy: SMOTE ratio for L1.
-            l2_sampling_strategy: SMOTE ratio for L2.
-            l2_weight_multiplier: Extra weight for severe class.
+            l2_sampling_strategy: SMOTE ratio for L2 (default: 1.0 for full balance).
+            l2_weight_multiplier: Extra weight for severe class (default: 3.0).
+            l2_resampling_method: Resampling method for L2 ('borderline' or 'adasyn').
             n_estimators: Number of trees in ensemble.
             max_depth: Maximum tree depth.
             n_jobs: Parallel jobs (-1 for all cores).
             l1_threshold: Initial L1 threshold.
             l2_threshold: Initial L2 threshold.
             random_state: Random seed.
+            pretrained_l2_model: Optional pre-trained global L2 model. If provided,
+                skips L2 training and uses this model instead.
         """
         super().__init__(l1_threshold, l2_threshold, random_state)
 
@@ -198,9 +210,11 @@ class SimplifiedTreeClassifier(SimplifiedClassifierBase):
         self.l1_sampling_strategy = l1_sampling_strategy
         self.l2_sampling_strategy = l2_sampling_strategy
         self.l2_weight_multiplier = l2_weight_multiplier
+        self.l2_resampling_method = l2_resampling_method
         self.n_estimators = n_estimators
         self.max_depth = max_depth
         self.n_jobs = n_jobs
+        self._pretrained_l2_model = pretrained_l2_model
 
         # Models (created during fit)
         self.l1_model: RandomForestClassifier | XGBClassifier | ExtraTreesClassifier | LGBMClassifier | None = None
@@ -246,8 +260,14 @@ class SimplifiedTreeClassifier(SimplifiedClassifierBase):
         injury_mask = targets.y_injury == 1
         y_severe_subset = targets.y_severe[injury_mask]
         n_severe_classes = len(np.unique(y_severe_subset))
-        
-        if n_severe_classes < 2:
+
+        # Check if we should use a pre-trained global L2 model
+        if self._pretrained_l2_model is not None:
+            logger.info("=" * 60)
+            logger.info("L2 (SEVERE): Using pre-trained global model")
+            logger.info("=" * 60)
+            self.l2_model = self._pretrained_l2_model
+        elif n_severe_classes < 2:
             # Only one class present (no SEVERE or no MINOR) - skip L2
             logger.info("=" * 60)
             logger.info(f"L2 (SEVERE): Skipping - only {n_severe_classes} class present")
@@ -265,6 +285,7 @@ class SimplifiedTreeClassifier(SimplifiedClassifierBase):
                 model_type=self.l2_model_type,
                 sampling_strategy=self.l2_sampling_strategy,
                 weight_multiplier=self.l2_weight_multiplier,
+                use_adasyn=(self.l2_resampling_method == "adasyn"),
             )
 
         return self
@@ -276,8 +297,23 @@ class SimplifiedTreeClassifier(SimplifiedClassifierBase):
         model_type: str,
         sampling_strategy: float,
         weight_multiplier: float,
+        use_adasyn: bool = False,
     ) -> RandomForestClassifier | XGBClassifier | ExtraTreesClassifier | LGBMClassifier:
-        """Fit a single level model with SMOTE."""
+        """Fit a single level model with oversampling.
+
+        Args:
+            X: Feature matrix.
+            y: Binary labels.
+            model_type: Model type ('rf', 'xgb', 'et', 'lgbm').
+            sampling_strategy: Target ratio of minority to majority class.
+            weight_multiplier: Extra weight multiplier for positive class.
+            use_adasyn: If True, use ADASYN instead of BorderlineSMOTE.
+                ADASYN focuses on harder-to-learn samples, which can improve
+                minority class detection.
+
+        Returns:
+            Trained classifier.
+        """
         # Class distribution
         n_neg = np.sum(y == 0)
         n_pos = np.sum(y == 1)
@@ -285,8 +321,10 @@ class SimplifiedTreeClassifier(SimplifiedClassifierBase):
         logger.info(f"Class distribution: negative={n_neg}, positive={n_pos}")
         logger.info(f"Positive class weight: {pos_weight:.2f}")
 
-        # Apply SMOTE
-        X_resampled, y_resampled = self._apply_smote(X, y, sampling_strategy)
+        # Apply oversampling
+        X_resampled, y_resampled = self._apply_oversampling(
+            X, y, sampling_strategy, use_adasyn=use_adasyn
+        )
 
         # Create and train model
         model = _create_tree_model(
@@ -302,16 +340,30 @@ class SimplifiedTreeClassifier(SimplifiedClassifierBase):
 
         return model
 
-    def _apply_smote(
+    def _apply_oversampling(
         self,
         X: np.ndarray,
         y: np.ndarray,
         sampling_strategy: float,
+        use_adasyn: bool = False,
     ) -> tuple[np.ndarray, np.ndarray]:
-        """Apply BorderlineSMOTE with moderate oversampling."""
+        """Apply oversampling to address class imbalance.
+
+        Args:
+            X: Feature matrix.
+            y: Binary labels.
+            sampling_strategy: Target ratio of minority to majority class.
+            use_adasyn: If True, use ADASYN instead of BorderlineSMOTE.
+                ADASYN generates more synthetic samples for minority instances
+                that are harder to learn, which can improve detection of rare cases.
+
+        Returns:
+            Tuple of (X_resampled, y_resampled).
+        """
         unique, counts = np.unique(y, return_counts=True)
         class_dist = dict(zip(unique, counts))
-        logger.info(f"Before SMOTE: {class_dist}")
+        method_name = "ADASYN" if use_adasyn else "BorderlineSMOTE"
+        logger.info(f"Before {method_name}: {class_dist}")
 
         minority_class = min(class_dist, key=class_dist.get)
         majority_class = max(class_dist, key=class_dist.get)
@@ -321,23 +373,39 @@ class SimplifiedTreeClassifier(SimplifiedClassifierBase):
         target_minority = int(majority_count * sampling_strategy)
 
         if target_minority <= minority_count:
-            logger.info("Minority class already at target ratio, skipping SMOTE")
+            logger.info(f"Minority class already at target ratio, skipping {method_name}")
+            return X, y
+
+        # Need at least 2 neighbors for ADASYN/SMOTE
+        k_neighbors = min(5, minority_count - 1)
+        if k_neighbors < 1:
+            logger.warning(f"Not enough minority samples for {method_name} (need at least 2)")
             return X, y
 
         try:
-            smote = BorderlineSMOTE(
-                sampling_strategy={minority_class: target_minority},
-                k_neighbors=min(5, minority_count - 1),
-                random_state=self.random_state,
-            )
-            X_res, y_res = smote.fit_resample(X, y)
+            if use_adasyn:
+                # ADASYN focuses on harder-to-learn samples
+                sampler = ADASYN(
+                    sampling_strategy={minority_class: target_minority},
+                    n_neighbors=k_neighbors,
+                    random_state=self.random_state,
+                )
+            else:
+                # BorderlineSMOTE focuses on boundary samples
+                sampler = BorderlineSMOTE(
+                    sampling_strategy={minority_class: target_minority},
+                    k_neighbors=k_neighbors,
+                    random_state=self.random_state,
+                )
+
+            X_res, y_res = sampler.fit_resample(X, y)
 
             unique_res, counts_res = np.unique(y_res, return_counts=True)
-            logger.info(f"After SMOTE: {dict(zip(unique_res, counts_res))}")
+            logger.info(f"After {method_name}: {dict(zip(unique_res, counts_res))}")
 
             return X_res, y_res
         except ValueError as e:
-            logger.warning(f"SMOTE failed: {e}. Using original data.")
+            logger.warning(f"{method_name} failed: {e}. Using original data.")
             return X, y
 
     def predict_proba(self, X: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
