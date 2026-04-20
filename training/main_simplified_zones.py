@@ -265,6 +265,7 @@ def train_zone(
     zone_id: int,
     config: SimplifiedTreeConfig,
     feature_filter: str = "drop-low",
+    pretrained_l2_model: any = None,
 ) -> tuple[ZoneResults, SimplifiedTreeClassifier | None, ZoneROCData | None]:
     """Train a simplified classifier for a single zone.
 
@@ -273,6 +274,8 @@ def train_zone(
         zone_id: Zone identifier.
         config: Training configuration.
         feature_filter: Feature filtering mode.
+        pretrained_l2_model: Optional pre-trained global L2 model. If provided,
+            the zone classifier will use this instead of training its own L2.
 
     Returns:
         Tuple of (ZoneResults, trained classifier or None, ROC data or None if skipped).
@@ -371,12 +374,14 @@ def train_zone(
         l1_sampling_strategy=config.l1_sampling_strategy,
         l2_sampling_strategy=config.l2_sampling_strategy,
         l2_weight_multiplier=config.l2_weight_multiplier,
+        l2_resampling_method=config.l2_resampling_method,
         n_estimators=config.n_estimators,
         max_depth=config.max_depth,
         n_jobs=config.n_jobs,
         l1_threshold=config.l1_threshold,
         l2_threshold=config.l2_threshold,
         random_state=config.random_state,
+        pretrained_l2_model=pretrained_l2_model,
     )
     clf.feature_cols = feature_cols
 
@@ -387,12 +392,13 @@ def train_zone(
         results.skip_reason = f"Training failed: {e}"
         return results, None, None
 
-    # Optimize thresholds on validation set
+    # Optimize thresholds on validation set (use config target recall)
+    l2_target_recall = getattr(config, 'l2_target_recall', 0.6)
     clf.optimize_thresholds(
         X_val,
         targets_val,
         l1_target_recall=0.7,
-        l2_target_recall=0.5,
+        l2_target_recall=l2_target_recall,
     )
 
     # Evaluate on test set
@@ -569,11 +575,95 @@ def print_zone_summary(
     print(f"\nSummary saved to: {csv_path}")
 
 
+def train_global_l2_model(
+    df: pd.DataFrame,
+    config: SimplifiedTreeConfig,
+    feature_filter: str = "drop-low",
+) -> tuple[any, list[str]]:
+    """Train a global L2 model on all injury cases.
+
+    This pools severe cases from all zones together, providing more training
+    data for the rare severe class. The global L2 model can then be used
+    by per-zone classifiers instead of training zone-specific L2 models.
+
+    Args:
+        df: Full DataFrame with all crash data.
+        config: Training configuration.
+        feature_filter: Feature filtering mode.
+
+    Returns:
+        Tuple of (trained L2 model, feature column names).
+    """
+    logger.info("\n" + "=" * 70)
+    logger.info("TRAINING GLOBAL L2 MODEL (SEVERE vs MINOR)")
+    logger.info("=" * 70)
+
+    # Engineer features
+    df_eng = engineer_all_features(df.copy(), include_interactions=True, include_clusters=False)
+    df_eng = add_binary_targets(df_eng)
+
+    # Prepare features
+    X_df, feature_cols = prepare_features(df_eng)
+    X_df, feature_cols, _ = filter_by_importance(X_df, feature_cols, mode=feature_filter)
+    X = X_df.values
+
+    # Prepare targets
+    targets = prepare_simplified_targets(df_eng)
+
+    # Filter to injury cases only for L2 training
+    injury_mask = targets.y_injury == 1
+    X_injury = X[injury_mask]
+    y_severe = targets.y_severe[injury_mask]
+
+    n_injury = np.sum(injury_mask)
+    n_severe = np.sum(y_severe == 1)
+    n_minor = np.sum(y_severe == 0)
+    logger.info(f"Total injury cases: {n_injury:,}")
+    logger.info(f"  SEVERE: {n_severe:,} ({100*n_severe/n_injury:.1f}%)")
+    logger.info(f"  MINOR:  {n_minor:,} ({100*n_minor/n_injury:.1f}%)")
+
+    # Check if we have both classes
+    if len(np.unique(y_severe)) < 2:
+        logger.error("Cannot train global L2: need both SEVERE and MINOR cases")
+        return None, feature_cols
+
+    # Create a temporary classifier just to train L2
+    from training.hierarchical.simplified_classifier import SimplifiedTreeClassifier
+    temp_clf = SimplifiedTreeClassifier(
+        l2_model=config.l2_model,
+        l2_sampling_strategy=config.l2_sampling_strategy,
+        l2_weight_multiplier=config.l2_weight_multiplier,
+        l2_resampling_method=config.l2_resampling_method,
+        n_estimators=config.n_estimators,
+        max_depth=config.max_depth,
+        n_jobs=config.n_jobs,
+        random_state=config.random_state,
+    )
+
+    # Train the L2 model directly
+    logger.info(f"Training global L2 with {config.l2_resampling_method.upper()}...")
+    l2_model = temp_clf._fit_level(
+        X_injury,
+        y_severe,
+        model_type=config.l2_model,
+        sampling_strategy=config.l2_sampling_strategy,
+        weight_multiplier=config.l2_weight_multiplier,
+        use_adasyn=(config.l2_resampling_method == "adasyn"),
+    )
+
+    logger.info("Global L2 model trained successfully")
+    return l2_model, feature_cols
+
+
 def run_zoned_pipeline(
     n_clusters: int = 25,
     sample_size: int | None = None,
     min_zone_size: int = 100,
     feature_filter: str = "drop-low",
+    use_global_l2: bool = False,
+    l2_weight_multiplier: float | None = None,
+    l2_resampling_method: str | None = None,
+    l2_target_recall: float | None = None,
 ) -> list[ZoneResults]:
     """Run the zone-based simplified classification pipeline.
 
@@ -582,15 +672,31 @@ def run_zoned_pipeline(
         sample_size: Optional limit on total dataset size.
         min_zone_size: Minimum samples required per zone.
         feature_filter: Feature filtering mode.
+        use_global_l2: If True, train a single global L2 model on all injury data
+            and share it across zones. This improves severe class detection when
+            per-zone severe samples are insufficient.
+        l2_weight_multiplier: Override for L2 class weight multiplier.
+        l2_resampling_method: Override for L2 resampling method ('borderline' or 'adasyn').
+        l2_target_recall: Override for L2 target recall during threshold optimization.
 
     Returns:
         List of ZoneResults for all zones.
     """
     print("=" * 70)
     print(f"ZONE-BASED SIMPLIFIED CLASSIFICATION ({n_clusters} zones)")
+    if use_global_l2:
+        print("  Using GLOBAL L2 model (shared across zones)")
     print("=" * 70)
 
     config = SimplifiedTreeConfig(sample_size=sample_size)
+
+    # Apply CLI overrides to config
+    if l2_weight_multiplier is not None:
+        config.l2_weight_multiplier = l2_weight_multiplier
+    if l2_resampling_method is not None:
+        config.l2_resampling_method = l2_resampling_method
+    if l2_target_recall is not None:
+        config.l2_target_recall = l2_target_recall
     logger.info(f"Configuration: {config}")
 
     # Load and merge data
@@ -629,8 +735,18 @@ def run_zoned_pipeline(
         status = "OK" if count >= min_zone_size else "SMALL"
         logger.info(f"  Zone {zone_id:>2}: {count:>6,} samples [{status}]")
 
+    # Optionally train global L2 model
+    global_l2_model = None
+    if use_global_l2:
+        logger.info("\n[2.5/5] Training global L2 model on all injury cases...")
+        global_l2_model, _ = train_global_l2_model(df, config, feature_filter)
+        if global_l2_model is None:
+            logger.warning("Global L2 training failed, falling back to per-zone L2")
+
     # Train models per zone
     logger.info(f"\n[3/5] Training models per zone (min_size={min_zone_size})...")
+    if global_l2_model is not None:
+        logger.info("  (Using shared global L2 model)")
 
     zone_results: list[ZoneResults] = []
     zone_classifiers: dict[int, SimplifiedTreeClassifier] = {}
@@ -659,7 +775,10 @@ def run_zoned_pipeline(
 
         print(f"Training on {n_samples:,} samples... ", end="", flush=True)
 
-        results, clf, roc_data = train_zone(df_zone, int(zone_id), config, feature_filter)
+        results, clf, roc_data = train_zone(
+            df_zone, int(zone_id), config, feature_filter,
+            pretrained_l2_model=global_l2_model,
+        )
         zone_results.append(results)
 
         if results.skipped:
@@ -790,6 +909,35 @@ if __name__ == "__main__":
         default="drop-low",
         help="Feature filtering mode (default: drop-low)",
     )
+    # New options for improving severe detection
+    parser.add_argument(
+        "--global-l2",
+        action="store_true",
+        help="Train a single global L2 model on all injury data instead of per-zone. "
+             "This improves severe class detection when per-zone severe samples are scarce.",
+    )
+    parser.add_argument(
+        "--l2-weight",
+        type=float,
+        default=None,
+        help="Class weight multiplier for severe class (default: 3.0). "
+             "Higher values prioritize severe recall over precision.",
+    )
+    parser.add_argument(
+        "--l2-resampling",
+        type=str,
+        choices=["borderline", "adasyn"],
+        default=None,
+        help="Resampling method for L2 classifier (default: adasyn). "
+             "ADASYN focuses on harder-to-learn samples.",
+    )
+    parser.add_argument(
+        "--l2-target-recall",
+        type=float,
+        default=None,
+        help="Target recall for L2 threshold optimization (default: 0.6). "
+             "Higher values catch more severe cases but increase false positives.",
+    )
 
     args = parser.parse_args()
 
@@ -798,6 +946,10 @@ if __name__ == "__main__":
         sample_size=args.sample,
         min_zone_size=args.min_zone_size,
         feature_filter=args.feature_filter,
+        use_global_l2=args.global_l2,
+        l2_weight_multiplier=args.l2_weight,
+        l2_resampling_method=args.l2_resampling,
+        l2_target_recall=args.l2_target_recall,
     )
 
     # Final results
