@@ -1,8 +1,9 @@
 """Pydantic models for API request and response schemas."""
 
 from enum import Enum
+from datetime import datetime
 from pydantic import BaseModel, Field
-from typing import Literal
+from typing import Literal, Optional
 
 
 class ModelType(str, Enum):
