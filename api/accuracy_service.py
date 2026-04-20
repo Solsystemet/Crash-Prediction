@@ -100,7 +100,7 @@ def compute_class_metrics(
         metrics[label] = {
             "precision": round(precision, 4),
             "recall": round(recall, 4),
-            "f1_score": round(f1, 4),
+            "f1": round(f1, 4),
             "support": support,
         }
 
