@@ -28,6 +28,12 @@ from api.models import (
     ZonesResponse,
     ZonePredictionByIdRequest,
     AllZonesPredictionResponse,
+    AccuracyResponse,
+    AccuracyMetrics,
+    ClassMetrics,
+    PredictionWithActual,
+    MapPrediction,
+    MapDataResponse,
 )
 from api.prediction import predict, predict_by_type, model_manager, get_all_zones, predict_by_zone_id, predict_all_zones
 
