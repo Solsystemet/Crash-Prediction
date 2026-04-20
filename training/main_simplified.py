@@ -57,6 +57,7 @@ from training.hierarchical.simplified_classifier import (
     SimplifiedTreeClassifier,
     save_simplified_model,
 )
+from training.hierarchical.evaluation import plot_roc_curves
 from training.feature_selection import filter_by_importance
 
 logging.basicConfig(
@@ -71,7 +72,7 @@ def stratified_sample_severe(
     sample_size: int,
     random_state: int = 42,
 ) -> pd.DataFrame:
-    """Sample dataset ensuring SEVERE cases (FATAL + INCAPACITATING) are represented.
+    """Sample dataset ensuring all classes are represented.
 
     Args:
         df: Full DataFrame with MOST_SEVERE_INJURY column.
@@ -79,7 +80,7 @@ def stratified_sample_severe(
         random_state: Random seed for reproducibility.
 
     Returns:
-        Sampled DataFrame with severe cases well-represented.
+        Sampled DataFrame with all classes represented.
     """
     # Separate SEVERE (FATAL + INCAPACITATING) from rest
     severe_mask = df["MOST_SEVERE_INJURY"].isin(["FATAL", "INCAPACITATING INJURY"])
@@ -87,24 +88,34 @@ def stratified_sample_severe(
     other_df = df[~severe_mask]
 
     n_severe = len(severe_df)
+    n_other = len(other_df)
     logger.info(f"  SEVERE cases in full data: {n_severe}")
+    logger.info(f"  Other cases in full data: {n_other}")
 
-    # If we have more severe than sample_size, just sample from severe
-    if n_severe >= sample_size:
-        result = severe_df.sample(n=sample_size, random_state=random_state)
-        logger.info(f"  Sampled {sample_size} from {n_severe} SEVERE cases")
-        return result.reset_index(drop=True)
+    # Always include a mix of classes
+    # Target: up to 50% SEVERE, at least 50% other (to ensure class diversity)
+    max_severe = min(n_severe, sample_size // 2)
+    n_other_needed = sample_size - max_severe
 
-    # Otherwise, take all severe and sample from rest
-    n_other = sample_size - n_severe
+    # Sample from each group
+    if n_severe > max_severe:
+        severe_sample = severe_df.sample(n=max_severe, random_state=random_state)
+    else:
+        severe_sample = severe_df
 
-    if len(other_df) > n_other:
-        other_sample = other_df.sample(n=n_other, random_state=random_state)
+    if n_other > n_other_needed:
+        other_sample = other_df.sample(n=n_other_needed, random_state=random_state)
     else:
         other_sample = other_df
+        # If we don't have enough other, take more severe
+        extra_severe_needed = n_other_needed - len(other_sample)
+        remaining_severe = severe_df.drop(severe_sample.index)
+        if len(remaining_severe) >= extra_severe_needed:
+            extra_severe = remaining_severe.sample(n=extra_severe_needed, random_state=random_state)
+            severe_sample = pd.concat([severe_sample, extra_severe], ignore_index=True)
 
-    result = pd.concat([severe_df, other_sample], ignore_index=True)
-    logger.info(f"  Stratified sample: {n_severe} SEVERE + {len(other_sample)} other = {len(result)}")
+    result = pd.concat([severe_sample, other_sample], ignore_index=True)
+    logger.info(f"  Stratified sample: {len(severe_sample)} SEVERE + {len(other_sample)} other = {len(result)}")
 
     return result.sample(frac=1, random_state=random_state).reset_index(drop=True)
 
@@ -221,14 +232,17 @@ def evaluate_simplified(
 
     accuracy = accuracy_score(targets.y_simplified, y_pred)
     f1_macro = f1_score(targets.y_simplified, y_pred, average="macro", zero_division=0)
+    f1_micro = f1_score(targets.y_simplified, y_pred, average="micro", zero_division=0)
     f1_weighted = f1_score(targets.y_simplified, y_pred, average="weighted", zero_division=0)
 
     logger.info(f"Accuracy:      {accuracy:.4f}")
     logger.info(f"F1 (macro):    {f1_macro:.4f}")
+    logger.info(f"F1 (micro):    {f1_micro:.4f}")
     logger.info(f"F1 (weighted): {f1_weighted:.4f}")
 
     results["accuracy"] = accuracy
     results["f1_macro"] = f1_macro
+    results["f1_micro"] = f1_micro
     results["f1_weighted"] = f1_weighted
 
     # Per-class report
@@ -419,10 +433,45 @@ def run_simplified_pipeline(
     logger.info("=" * 60)
     logger.info(f"3-Class Accuracy: {results['accuracy']:.4f}")
     logger.info(f"Macro F1: {results['f1_macro']:.4f}")
+    logger.info(f"Micro F1: {results['f1_micro']:.4f}")
     for class_name in SIMPLIFIED_CLASS_NAMES:
         key = f"recall_{class_name}"
         if key in results:
             logger.info(f"  {class_name} Recall: {results[key]:.4f}")
+
+    # Generate ROC curves
+    logger.info("\nGenerating ROC curves...")
+    plots_dir = PROJECT_ROOT / "models" / "plots"
+    plots_dir.mkdir(parents=True, exist_ok=True)
+
+    # Get probabilities for ROC
+    l1_proba, l2_proba = clf.predict_proba(X_test)
+    injury_mask = targets_test.y_injury == 1
+
+    y_true_levels = {
+        "L1 (INJURY vs NO_INJURY)": targets_test.y_injury,
+    }
+    y_proba_levels = {
+        "L1 (INJURY vs NO_INJURY)": l1_proba,
+    }
+
+    # Add L2 if we have injury cases
+    if np.sum(injury_mask) > 0:
+        y_true_levels["L2 (SEVERE vs MINOR)"] = targets_test.y_severe[injury_mask]
+        y_proba_levels["L2 (SEVERE vs MINOR)"] = l2_proba[injury_mask]
+
+    roc_path = plots_dir / "roc_curves_simplified.png"
+    auc_scores = plot_roc_curves(
+        y_true_levels=y_true_levels,
+        y_proba_levels=y_proba_levels,
+        save_path=roc_path,
+        title="ROC Curves - Simplified 3-Class Classifier",
+    )
+
+    logger.info(f"ROC curves saved to {roc_path}")
+    for level_name, auc in auc_scores.items():
+        logger.info(f"  {level_name}: AUC = {auc:.4f}")
+        results[f"auc_{level_name}"] = auc
 
     # Save model
     model_dir = PROJECT_ROOT / "models" / "trained" / "simplified_3class"

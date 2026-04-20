@@ -61,6 +61,7 @@ from training.hierarchical.simplified_classifier import (
     SimplifiedTreeClassifier,
     save_simplified_model,
 )
+from training.hierarchical.evaluation import plot_roc_curves
 from training.feature_selection import filter_by_importance
 
 logging.basicConfig(
@@ -87,6 +88,7 @@ class ZoneResults:
     l2_f1: float = 0.0
     accuracy: float = 0.0
     f1_macro: float = 0.0
+    f1_micro: float = 0.0
     f1_weighted: float = 0.0
     recall_no_injury: float = 0.0
     recall_minor: float = 0.0
@@ -110,6 +112,7 @@ class ZoneResults:
             "l2_f1": self.l2_f1,
             "accuracy": self.accuracy,
             "f1_macro": self.f1_macro,
+            "f1_micro": self.f1_micro,
             "f1_weighted": self.f1_weighted,
             "recall_NO_INJURY": self.recall_no_injury,
             "recall_MINOR": self.recall_minor,
@@ -117,6 +120,17 @@ class ZoneResults:
             "skipped": self.skipped,
             "skip_reason": self.skip_reason,
         }
+
+
+@dataclass
+class ZoneROCData:
+    """Container for ROC curve data from a single zone."""
+
+    zone_id: int
+    l1_y_true: np.ndarray | None = None
+    l1_y_proba: np.ndarray | None = None
+    l2_y_true: np.ndarray | None = None  # Only injury cases
+    l2_y_proba: np.ndarray | None = None  # Only injury cases
 
 
 def stratified_sample_severe(
@@ -251,7 +265,7 @@ def train_zone(
     zone_id: int,
     config: SimplifiedTreeConfig,
     feature_filter: str = "drop-low",
-) -> tuple[ZoneResults, SimplifiedTreeClassifier | None]:
+) -> tuple[ZoneResults, SimplifiedTreeClassifier | None, ZoneROCData | None]:
     """Train a simplified classifier for a single zone.
 
     Args:
@@ -261,7 +275,7 @@ def train_zone(
         feature_filter: Feature filtering mode.
 
     Returns:
-        Tuple of (ZoneResults, trained classifier or None if skipped).
+        Tuple of (ZoneResults, trained classifier or None, ROC data or None if skipped).
     """
     n_samples = len(df_zone)
 
@@ -279,7 +293,7 @@ def train_zone(
     if n_samples < min_for_split:
         results.skipped = True
         results.skip_reason = f"Insufficient samples ({n_samples} < {min_for_split})"
-        return results, None
+        return results, None, None
 
     # Engineer features for this zone
     df_zone = engineer_all_features(df_zone, include_interactions=True, include_clusters=False)
@@ -302,7 +316,7 @@ def train_zone(
     if n_classes < 2:
         results.skipped = True
         results.skip_reason = f"Only 1 class present (need at least 2 for classification)"
-        return results, None
+        return results, None, None
 
     # Split data - try stratified first, fall back to random if it fails
     try:
@@ -371,7 +385,7 @@ def train_zone(
     except Exception as e:
         results.skipped = True
         results.skip_reason = f"Training failed: {e}"
-        return results, None
+        return results, None, None
 
     # Optimize thresholds on validation set
     clf.optimize_thresholds(
@@ -405,6 +419,7 @@ def train_zone(
     # 3-class metrics
     results.accuracy = accuracy_score(targets_test.y_simplified, y_pred)
     results.f1_macro = f1_score(targets_test.y_simplified, y_pred, average="macro", zero_division=0)
+    results.f1_micro = f1_score(targets_test.y_simplified, y_pred, average="micro", zero_division=0)
     results.f1_weighted = f1_score(targets_test.y_simplified, y_pred, average="weighted", zero_division=0)
 
     # Per-class recall
@@ -419,7 +434,17 @@ def train_zone(
             elif class_name == "SEVERE":
                 results.recall_severe = recall
 
-    return results, clf
+    # Collect ROC data (probabilities)
+    l1_proba, l2_proba = clf.predict_proba(X_test)
+    roc_data = ZoneROCData(
+        zone_id=zone_id,
+        l1_y_true=targets_test.y_injury,
+        l1_y_proba=l1_proba,
+        l2_y_true=targets_test.y_severe[injury_mask] if np.sum(injury_mask) > 0 else None,
+        l2_y_proba=l2_proba[injury_mask] if np.sum(injury_mask) > 0 else None,
+    )
+
+    return results, clf, roc_data
 
 
 def save_zone_models(
@@ -499,42 +524,43 @@ def print_zone_summary(
         return
 
     # Summary table
-    print("\n" + "-" * 70)
-    print(f"{'Zone':>6} | {'Samples':>8} | {'Accuracy':>8} | {'Macro F1':>8} | {'SEVERE Recall':>13}")
-    print("-" * 70)
+    print("\n" + "-" * 85)
+    print(f"{'Zone':>6} | {'Samples':>8} | {'Accuracy':>8} | {'Macro F1':>8} | {'Micro F1':>8} | {'SEVERE Recall':>13}")
+    print("-" * 85)
 
     for r in sorted(trained_zones, key=lambda x: x.zone_id):
         print(
             f"{r.zone_id:>6} | {r.n_samples:>8,} | {r.accuracy:>8.4f} | "
-            f"{r.f1_macro:>8.4f} | {r.recall_severe:>13.4f}"
+            f"{r.f1_macro:>8.4f} | {r.f1_micro:>8.4f} | {r.recall_severe:>13.4f}"
         )
 
     # Best and worst zones
     best_zone = max(trained_zones, key=lambda x: x.f1_macro)
     worst_zone = min(trained_zones, key=lambda x: x.f1_macro)
 
-    print("-" * 70)
+    print("-" * 85)
     print(
         f"{'BEST':>6} | {best_zone.n_samples:>8,} | {best_zone.accuracy:>8.4f} | "
-        f"{best_zone.f1_macro:>8.4f} | {best_zone.recall_severe:>13.4f}  (Zone {best_zone.zone_id})"
+        f"{best_zone.f1_macro:>8.4f} | {best_zone.f1_micro:>8.4f} | {best_zone.recall_severe:>13.4f}  (Zone {best_zone.zone_id})"
     )
     print(
         f"{'WORST':>6} | {worst_zone.n_samples:>8,} | {worst_zone.accuracy:>8.4f} | "
-        f"{worst_zone.f1_macro:>8.4f} | {worst_zone.recall_severe:>13.4f}  (Zone {worst_zone.zone_id})"
+        f"{worst_zone.f1_macro:>8.4f} | {worst_zone.f1_micro:>8.4f} | {worst_zone.recall_severe:>13.4f}  (Zone {worst_zone.zone_id})"
     )
 
     # Weighted averages
     total_weight = sum(r.n_samples for r in trained_zones)
     avg_accuracy = sum(r.accuracy * r.n_samples for r in trained_zones) / total_weight
     avg_f1_macro = sum(r.f1_macro * r.n_samples for r in trained_zones) / total_weight
+    avg_f1_micro = sum(r.f1_micro * r.n_samples for r in trained_zones) / total_weight
     avg_severe_recall = sum(r.recall_severe * r.n_samples for r in trained_zones) / total_weight
 
-    print("-" * 70)
+    print("-" * 85)
     print(
         f"{'AVG':>6} | {total_samples // len(trained_zones):>8,} | {avg_accuracy:>8.4f} | "
-        f"{avg_f1_macro:>8.4f} | {avg_severe_recall:>13.4f}  (weighted)"
+        f"{avg_f1_macro:>8.4f} | {avg_f1_micro:>8.4f} | {avg_severe_recall:>13.4f}  (weighted)"
     )
-    print("-" * 70)
+    print("-" * 85)
 
     # Save to CSV
     summary_df = pd.DataFrame([r.to_dict() for r in zone_results])
@@ -608,6 +634,7 @@ def run_zoned_pipeline(
 
     zone_results: list[ZoneResults] = []
     zone_classifiers: dict[int, SimplifiedTreeClassifier] = {}
+    zone_roc_data: list[ZoneROCData] = []
     shared_feature_cols: list[str] = []
 
     for zone_id in sorted(df["ZONE"].unique()):
@@ -632,13 +659,15 @@ def run_zoned_pipeline(
 
         print(f"Training on {n_samples:,} samples... ", end="", flush=True)
 
-        results, clf = train_zone(df_zone, int(zone_id), config, feature_filter)
+        results, clf, roc_data = train_zone(df_zone, int(zone_id), config, feature_filter)
         zone_results.append(results)
 
         if results.skipped:
             print(f"SKIPPED - {results.skip_reason}")
         else:
             zone_classifiers[int(zone_id)] = clf
+            if roc_data is not None:
+                zone_roc_data.append(roc_data)
             if clf is not None and hasattr(clf, "feature_cols"):
                 shared_feature_cols = clf.feature_cols
             print(
@@ -668,7 +697,68 @@ def run_zoned_pipeline(
     plots_dir.mkdir(parents=True, exist_ok=True)
     print_zone_summary(zone_results, plots_dir)
 
+    # Generate aggregate ROC curves
+    if zone_roc_data:
+        logger.info("\nGenerating ROC curves...")
+        _plot_aggregate_roc(zone_roc_data, plots_dir)
+
     return zone_results
+
+
+def _plot_aggregate_roc(
+    zone_roc_data: list[ZoneROCData],
+    output_dir: Path,
+) -> None:
+    """Aggregate ROC data from all zones and plot combined ROC curves.
+
+    Args:
+        zone_roc_data: List of ZoneROCData from successfully trained zones.
+        output_dir: Directory to save the ROC plot.
+    """
+    # Aggregate L1 and L2 data across zones
+    l1_y_true_all = []
+    l1_y_proba_all = []
+    l2_y_true_all = []
+    l2_y_proba_all = []
+
+    for roc_data in zone_roc_data:
+        if roc_data.l1_y_true is not None and roc_data.l1_y_proba is not None:
+            l1_y_true_all.append(roc_data.l1_y_true)
+            l1_y_proba_all.append(roc_data.l1_y_proba)
+
+        if roc_data.l2_y_true is not None and roc_data.l2_y_proba is not None:
+            l2_y_true_all.append(roc_data.l2_y_true)
+            l2_y_proba_all.append(roc_data.l2_y_proba)
+
+    # Build level dictionaries for plotting
+    y_true_levels = {}
+    y_proba_levels = {}
+
+    if l1_y_true_all:
+        y_true_levels["L1 (INJURY vs NO_INJURY)"] = np.concatenate(l1_y_true_all)
+        y_proba_levels["L1 (INJURY vs NO_INJURY)"] = np.concatenate(l1_y_proba_all)
+
+    if l2_y_true_all:
+        y_true_levels["L2 (SEVERE vs MINOR)"] = np.concatenate(l2_y_true_all)
+        y_proba_levels["L2 (SEVERE vs MINOR)"] = np.concatenate(l2_y_proba_all)
+
+    if not y_true_levels:
+        logger.warning("No valid ROC data to plot")
+        return
+
+    # Plot
+    save_path = output_dir / "roc_curves.png"
+    auc_scores = plot_roc_curves(
+        y_true_levels=y_true_levels,
+        y_proba_levels=y_proba_levels,
+        save_path=save_path,
+        title="ROC Curves - Zone-Based Simplified Classifier (Aggregated)",
+    )
+
+    # Log summary
+    print(f"\nROC curves saved to: {save_path}")
+    for level_name, auc in auc_scores.items():
+        print(f"  {level_name}: AUC = {auc:.4f}")
 
 
 if __name__ == "__main__":
@@ -719,8 +809,10 @@ if __name__ == "__main__":
     if trained:
         total = sum(r.n_samples for r in trained)
         avg_acc = sum(r.accuracy * r.n_samples for r in trained) / total
-        avg_f1 = sum(r.f1_macro * r.n_samples for r in trained) / total
+        avg_f1_macro = sum(r.f1_macro * r.n_samples for r in trained) / total
+        avg_f1_micro = sum(r.f1_micro * r.n_samples for r in trained) / total
         avg_severe = sum(r.recall_severe * r.n_samples for r in trained) / total
         print(f"Weighted Accuracy: {avg_acc:.4f}")
-        print(f"Weighted Macro F1: {avg_f1:.4f}")
+        print(f"Weighted Macro F1: {avg_f1_macro:.4f}")
+        print(f"Weighted Micro F1: {avg_f1_micro:.4f}")
         print(f"Weighted SEVERE Recall: {avg_severe:.4f}")
