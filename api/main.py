@@ -36,6 +36,8 @@ from api.models import (
     MapDataResponse,
 )
 from api.prediction import predict, predict_by_type, model_manager, get_all_zones, predict_by_zone_id, predict_all_zones
+from api.accuracy_service import evaluate_accuracy, get_map_data
+from api.chicago_client import ChicagoAPIError
 
 logging.basicConfig(
     level=logging.INFO,
