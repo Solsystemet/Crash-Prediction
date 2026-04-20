@@ -56,6 +56,7 @@ from training.hierarchical import (
     prepare_hierarchical_targets,
     evaluate_hierarchical,
 )
+from training.hierarchical.evaluation import plot_roc_curves
 from training.hierarchical.tree_classifier import save_hierarchical_model
 from training.feature_selection import filter_by_importance
 
@@ -345,6 +346,10 @@ def run_hierarchical_pipeline(
     logger.info("SUMMARY")
     logger.info("=" * 60)
 
+    logger.info(f"Multiclass Accuracy: {results.get('mc_accuracy', 0):.4f}")
+    logger.info(f"Macro F1: {results.get('mc_f1_macro', 0):.4f}")
+    logger.info(f"Micro F1: {results.get('mc_f1_micro', 0):.4f}")
+
     target_metrics = ["recall_FATAL", "recall_INCAPACITATING INJURY"]
     for metric in target_metrics:
         if metric in results:
@@ -352,6 +357,52 @@ def run_hierarchical_pipeline(
             new_val = results[metric]
             improvement = (new_val - old_val) / old_val * 100 if old_val > 0 else 0
             logger.info(f"{metric}: {new_val:.4f} (was {old_val:.4f}, {improvement:+.1f}%)")
+
+    # Generate ROC curves
+    logger.info("\nGenerating ROC curves...")
+    plots_dir = PROJECT_ROOT / "models" / "plots"
+    plots_dir.mkdir(parents=True, exist_ok=True)
+
+    # Get probabilities for ROC (4-level hierarchical)
+    l1_proba, l2_proba, l25_proba, l3_proba = clf.predict_proba(X_test)
+
+    y_true_levels = {
+        "L1 (INJURY vs NO_INJURY)": targets_test.y_injury,
+    }
+    y_proba_levels = {
+        "L1 (INJURY vs NO_INJURY)": l1_proba,
+    }
+
+    # L2: SEVERE vs MINOR (injury cases only)
+    injury_mask = targets_test.y_injury == 1
+    if np.sum(injury_mask) > 0:
+        y_true_levels["L2 (SEVERE vs MINOR)"] = targets_test.y_severe[injury_mask]
+        y_proba_levels["L2 (SEVERE vs MINOR)"] = l2_proba[injury_mask]
+
+    # L2.5: FATAL vs INCAPACITATING (severe cases only)
+    severe_mask = (targets_test.y_injury == 1) & (targets_test.y_severe == 1)
+    if np.sum(severe_mask) > 0:
+        y_true_levels["L2.5 (FATAL vs INCAP)"] = targets_test.y_fatal[severe_mask]
+        y_proba_levels["L2.5 (FATAL vs INCAP)"] = l25_proba[severe_mask]
+
+    # L3: REPORTED vs VISIBLE (minor injury cases only)
+    minor_mask = (targets_test.y_injury == 1) & (targets_test.y_severe == 0)
+    if np.sum(minor_mask) > 0:
+        y_true_levels["L3 (REPORTED vs VISIBLE)"] = targets_test.y_reported[minor_mask]
+        y_proba_levels["L3 (REPORTED vs VISIBLE)"] = l3_proba[minor_mask]
+
+    roc_path = plots_dir / "roc_curves_hierarchical.png"
+    auc_scores = plot_roc_curves(
+        y_true_levels=y_true_levels,
+        y_proba_levels=y_proba_levels,
+        save_path=roc_path,
+        title="ROC Curves - Hierarchical 5-Class Classifier",
+    )
+
+    logger.info(f"ROC curves saved to {roc_path}")
+    for level_name, auc in auc_scores.items():
+        logger.info(f"  {level_name}: AUC = {auc:.4f}")
+        results[f"auc_{level_name}"] = auc
 
     # Save model (only for tree-based classifiers)
     if model_type == "tree":
