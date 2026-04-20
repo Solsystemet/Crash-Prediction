@@ -367,11 +367,17 @@ class PredictionWithActual(BaseModel):
     """A prediction compared against actual outcome."""
 
     crash_record_id: str
-    crash_date: datetime
-    predicted: str
-    actual: str
-    correct: bool
+    crash_date: datetime | str | None
+    predicted_severity: str
+    actual_severity: str
+    is_correct: bool
     confidence: float = Field(ge=0, le=1)
+    latitude: float | None = None
+    longitude: float | None = None
+    weather_condition: str | None = None
+    lighting_condition: str | None = None
+    first_crash_type: str | None = None
+    posted_speed_limit: str | None = None
 
 
 class AccuracyResponse(BaseModel):
