@@ -100,7 +100,7 @@ def compute_class_metrics(
         metrics[label] = {
             "precision": round(precision, 4),
             "recall": round(recall, 4),
-            "f1": round(f1, 4),
+            "f1_score": round(f1, 4),
             "support": support,
         }
 
@@ -127,9 +127,79 @@ def compute_overall_accuracy(
     return round(correct / len(y_true), 4)
 
 
+def compute_f1_scores(
+    class_metrics: dict[str, dict[str, float]],
+    labels: list[str] = CLASS_LABELS,
+) -> dict[str, float]:
+    """Compute macro and micro F1 scores.
+
+    Args:
+        class_metrics: Per-class metrics from compute_class_metrics
+        labels: List of class labels
+
+    Returns:
+        Dictionary with f1_macro and f1_micro
+    """
+    # Macro F1: simple average of per-class F1 scores
+    f1_scores = [
+        class_metrics[label]["f1_score"] for label in labels if label in class_metrics
+    ]
+    f1_macro = sum(f1_scores) / len(f1_scores) if f1_scores else 0.0
+
+    # Micro F1: compute from total TP, FP, FN across all classes
+    total_tp = 0
+    total_fp = 0
+    total_fn = 0
+
+    for label in labels:
+        if label not in class_metrics:
+            continue
+        metrics = class_metrics[label]
+        support = metrics["support"]
+        precision = metrics["precision"]
+        recall = metrics["recall"]
+
+        # Reverse-engineer TP, FP, FN from precision, recall, support
+        # recall = TP / (TP + FN), and support = TP + FN
+        # So TP = recall * support
+        tp = recall * support
+        fn = support - tp
+
+        # precision = TP / (TP + FP)
+        # So FP = TP / precision - TP (if precision > 0)
+        if precision > 0:
+            fp = tp / precision - tp
+        else:
+            fp = 0
+
+        total_tp += tp
+        total_fp += fp
+        total_fn += fn
+
+    # Micro precision and recall
+    micro_precision = (
+        total_tp / (total_tp + total_fp) if (total_tp + total_fp) > 0 else 0.0
+    )
+    micro_recall = (
+        total_tp / (total_tp + total_fn) if (total_tp + total_fn) > 0 else 0.0
+    )
+
+    # Micro F1
+    f1_micro = (
+        2 * micro_precision * micro_recall / (micro_precision + micro_recall)
+        if (micro_precision + micro_recall) > 0
+        else 0.0
+    )
+
+    return {
+        "f1_macro": round(f1_macro, 4),
+        "f1_micro": round(f1_micro, 4),
+    }
+
+
 def evaluate_accuracy(
     days: int = 7,
-    max_crashes: int = 500,
+    max_crashes: int = 10000,
 ) -> dict[str, Any]:
     """Evaluate model accuracy on recent real crash data.
 
@@ -246,6 +316,7 @@ def evaluate_accuracy(
     confusion_matrix = compute_confusion_matrix(y_true, y_pred)
     class_metrics = compute_class_metrics(confusion_matrix)
     overall_accuracy = compute_overall_accuracy(y_true, y_pred)
+    f1_scores = compute_f1_scores(class_metrics)
 
     logger.info(
         f"Accuracy evaluation complete: {len(predictions)} predictions, "
@@ -261,6 +332,8 @@ def evaluate_accuracy(
             "class_labels": CLASS_LABELS,
             "time_range_days": days,
             "computed_at": datetime.now().isoformat(),
+            "f1_macro": f1_scores["f1_macro"],
+            "f1_micro": f1_scores["f1_micro"],
         },
         "predictions": predictions,
     }

@@ -35,7 +35,14 @@ from api.models import (
     MapPrediction,
     MapDataResponse,
 )
-from api.prediction import predict, predict_by_type, model_manager, get_all_zones, predict_by_zone_id, predict_all_zones
+from api.prediction import (
+    predict,
+    predict_by_type,
+    model_manager,
+    get_all_zones,
+    predict_by_zone_id,
+    predict_all_zones,
+)
 from api.accuracy_service import evaluate_accuracy, get_map_data
 from api.chicago_client import ChicagoAPIError
 
@@ -105,7 +112,10 @@ async def health_check():
 
 @app.post(
     "/api/predict",
-    response_model=PredictionResponse | ZonePredictionResponse | RegressionPredictionResponse | HierarchicalPredictionResponse,
+    response_model=PredictionResponse
+    | ZonePredictionResponse
+    | RegressionPredictionResponse
+    | HierarchicalPredictionResponse,
     tags=["Prediction"],
 )
 async def predict_severity(request: PredictionRequest):
@@ -233,7 +243,7 @@ async def list_models():
 @app.get("/api/accuracy", response_model=AccuracyResponse, tags=["Accuracy"])
 async def get_accuracy(
     days: int = 7,
-    max_crashes: int = 500,
+    max_crashes: int = 10000,
 ):
     """Evaluate model accuracy on recent real crash data from Chicago.
 
@@ -242,7 +252,7 @@ async def get_accuracy(
 
     Args:
         days: Number of days back to fetch data (1, 7, 30, or 90)
-        max_crashes: Maximum number of crashes to evaluate (default 500)
+        max_crashes: Maximum number of crashes to evaluate (default 10000, max 10000)
 
     Returns:
         AccuracyResponse with metrics and individual predictions
@@ -252,7 +262,7 @@ async def get_accuracy(
         days = 7  # Default to 7 days if invalid
 
     # Cap max_crashes to prevent excessive API calls
-    max_crashes = min(max(max_crashes, 10), 2000)
+    max_crashes = min(max(max_crashes, 10), 10000)
 
     try:
         result = evaluate_accuracy(days=days, max_crashes=max_crashes)
@@ -269,6 +279,8 @@ async def get_accuracy(
             class_labels=result["metrics"]["class_labels"],
             time_range_days=result["metrics"]["time_range_days"],
             computed_at=result["metrics"]["computed_at"],
+            f1_macro=result["metrics"]["f1_macro"],
+            f1_micro=result["metrics"]["f1_micro"],
         )
 
         predictions = [PredictionWithActual(**p) for p in result["predictions"]]

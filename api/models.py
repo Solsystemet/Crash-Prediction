@@ -250,9 +250,7 @@ class ZonePredictionResponse(BaseModel):
 class RegressionPredictionResponse(BaseModel):
     """Response schema for crash count regression prediction."""
 
-    predicted_count: float = Field(
-        ge=0, description="Predicted number of crashes"
-    )
+    predicted_count: float = Field(ge=0, description="Predicted number of crashes")
     confidence_interval: tuple[float, float] = Field(
         description="95% confidence interval (lower, upper)"
     )
@@ -347,7 +345,7 @@ class ClassMetrics(BaseModel):
 
     precision: float = Field(ge=0, le=1)
     recall: float = Field(ge=0, le=1)
-    f1: float = Field(ge=0, le=1)
+    f1_score: float = Field(ge=0, le=1)
     support: int = Field(ge=0)
 
 
@@ -361,6 +359,8 @@ class AccuracyMetrics(BaseModel):
     class_labels: list[str]
     time_range_days: int
     computed_at: datetime
+    f1_macro: float = Field(ge=0, le=1)
+    f1_micro: float = Field(ge=0, le=1)
 
 
 class PredictionWithActual(BaseModel):
