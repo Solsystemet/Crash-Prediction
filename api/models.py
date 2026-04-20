@@ -339,3 +339,67 @@ class AllZonesPredictionResponse(BaseModel):
         description="Predictions for each zone"
     )
     total_zones: int = Field(description="Total number of zones predicted")
+
+
+# Accuracy evaluation models
+class ClassMetrics(BaseModel):
+    """Metrics for a single class."""
+
+    precision: float = Field(ge=0, le=1)
+    recall: float = Field(ge=0, le=1)
+    f1: float = Field(ge=0, le=1)
+    support: int = Field(ge=0)
+
+
+class AccuracyMetrics(BaseModel):
+    """Overall accuracy metrics."""
+
+    overall_accuracy: float = Field(ge=0, le=1)
+    sample_count: int = Field(ge=0)
+    per_class_metrics: dict[str, ClassMetrics]
+    confusion_matrix: list[list[int]]
+    class_labels: list[str]
+    time_range_days: int
+    computed_at: datetime
+
+
+class PredictionWithActual(BaseModel):
+    """A prediction compared against actual outcome."""
+
+    crash_record_id: str
+    crash_date: datetime
+    predicted: str
+    actual: str
+    correct: bool
+    confidence: float = Field(ge=0, le=1)
+
+
+class AccuracyResponse(BaseModel):
+    """Response schema for accuracy evaluation."""
+
+    metrics: AccuracyMetrics
+    predictions: list[PredictionWithActual]
+
+
+class MapPrediction(BaseModel):
+    """A prediction with coordinates for map display."""
+
+    crash_record_id: str
+    crash_date: datetime
+    predicted_severity: str
+    actual_severity: str
+    is_correct: bool
+    confidence: float = Field(ge=0, le=1)
+    latitude: float
+    longitude: float
+    weather_condition: str | None = None
+    lighting_condition: str | None = None
+
+
+class MapDataResponse(BaseModel):
+    """Response schema for map visualization data."""
+
+    predictions: list[MapPrediction]
+    total_count: int = Field(ge=0)
+    correct_count: int = Field(ge=0)
+    incorrect_count: int = Field(ge=0)
