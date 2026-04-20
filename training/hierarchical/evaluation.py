@@ -4,6 +4,7 @@ Provides model-agnostic evaluation that works with any HierarchicalClassifierBas
 """
 
 import logging
+from pathlib import Path
 
 import numpy as np
 from sklearn.metrics import (
@@ -13,6 +14,8 @@ from sklearn.metrics import (
     f1_score,
     precision_score,
     recall_score,
+    roc_auc_score,
+    roc_curve,
 )
 from sklearn.preprocessing import LabelEncoder
 
@@ -92,14 +95,17 @@ def evaluate_hierarchical(
 
     mc_acc = accuracy_score(targets.y_original, y_pred_multi)
     mc_f1_macro = f1_score(targets.y_original, y_pred_multi, average="macro", zero_division=0)
+    mc_f1_micro = f1_score(targets.y_original, y_pred_multi, average="micro", zero_division=0)
     mc_f1_weighted = f1_score(targets.y_original, y_pred_multi, average="weighted", zero_division=0)
 
     logger.info(f"Multiclass Accuracy:      {mc_acc:.4f}")
     logger.info(f"Multiclass F1 (macro):    {mc_f1_macro:.4f}")
+    logger.info(f"Multiclass F1 (micro):    {mc_f1_micro:.4f}")
     logger.info(f"Multiclass F1 (weighted): {mc_f1_weighted:.4f}")
 
     results["mc_accuracy"] = mc_acc
     results["mc_f1_macro"] = mc_f1_macro
+    results["mc_f1_micro"] = mc_f1_micro
     results["mc_f1_weighted"] = mc_f1_weighted
 
     # Per-class metrics
@@ -175,3 +181,93 @@ def _evaluate_level(
         f"{prefix}recall": rec,
         f"{prefix}f1": f1,
     }
+
+
+def plot_roc_curves(
+    y_true_levels: dict[str, np.ndarray],
+    y_proba_levels: dict[str, np.ndarray],
+    save_path: str | Path,
+    title: str = "ROC Curves - Hierarchical Classifier",
+) -> dict[str, float]:
+    """Plot ROC curves for each level of the hierarchical classifier.
+
+    Args:
+        y_true_levels: Dict mapping level name to true binary labels.
+            e.g., {"L1 (INJURY)": y_injury, "L2 (SEVERE)": y_severe[mask], ...}
+        y_proba_levels: Dict mapping level name to predicted probabilities.
+            e.g., {"L1 (INJURY)": l1_proba, "L2 (SEVERE)": l2_proba[mask], ...}
+        save_path: Path to save the ROC plot PNG.
+        title: Plot title.
+
+    Returns:
+        Dictionary of AUC scores per level.
+    """
+    try:
+        import matplotlib.pyplot as plt
+    except ImportError:
+        logger.warning("matplotlib not available, skipping ROC plot")
+        return {}
+
+    auc_scores = {}
+
+    # Set up plot
+    fig, ax = plt.subplots(figsize=(8, 6))
+
+    # Color palette for different levels
+    colors = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728"]
+
+    for i, (level_name, y_true) in enumerate(y_true_levels.items()):
+        y_proba = y_proba_levels.get(level_name)
+
+        if y_proba is None or len(y_true) == 0:
+            logger.warning(f"Skipping ROC for {level_name}: no data")
+            continue
+
+        # Skip if only one class present
+        if len(np.unique(y_true)) < 2:
+            logger.warning(f"Skipping ROC for {level_name}: only one class present")
+            continue
+
+        # Compute ROC curve and AUC
+        try:
+            fpr, tpr, _ = roc_curve(y_true, y_proba)
+            auc = roc_auc_score(y_true, y_proba)
+            auc_scores[level_name] = auc
+
+            # Plot
+            color = colors[i % len(colors)]
+            ax.plot(fpr, tpr, color=color, lw=2, label=f"{level_name} (AUC = {auc:.3f})")
+
+        except Exception as e:
+            logger.warning(f"Error computing ROC for {level_name}: {e}")
+            continue
+
+    # Diagonal reference line
+    ax.plot([0, 1], [0, 1], "k--", lw=1, label="Random (AUC = 0.500)")
+
+    # Formatting
+    ax.set_xlim([0.0, 1.0])
+    ax.set_ylim([0.0, 1.05])
+    ax.set_xlabel("False Positive Rate", fontsize=12)
+    ax.set_ylabel("True Positive Rate", fontsize=12)
+    ax.set_title(title, fontsize=14)
+    ax.legend(loc="lower right", fontsize=10)
+    ax.grid(True, alpha=0.3)
+
+    plt.tight_layout()
+
+    # Save
+    save_path = Path(save_path)
+    save_path.parent.mkdir(parents=True, exist_ok=True)
+    plt.savefig(save_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+    logger.info(f"ROC curve saved to {save_path}")
+
+    # Log AUC scores
+    for level_name, auc in auc_scores.items():
+        logger.info(f"  {level_name} AUC: {auc:.4f}")
+        if auc < 0.5:
+            logger.warning(f"  WARNING: {level_name} AUC < 0.5, model may be inverted")
+
+    return auc_scores
