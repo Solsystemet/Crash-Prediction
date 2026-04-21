@@ -2,6 +2,11 @@
 
 This module handles fetching real crash data from the Chicago API,
 running predictions on it, and computing accuracy metrics.
+
+Supports multiple model types:
+- simplified: 3-class (NO_INJURY, MINOR, SEVERE)
+- hierarchical: 5-class (NO_INJURY, REPORTED_NOT_EVIDENT, NONINCAPACITATING, INCAPACITATING, FATAL)
+- zones: 3-class with geographic zone assignment
 """
 
 from __future__ import annotations
@@ -14,16 +19,51 @@ from api.chicago_client import fetch_crash_data_for_accuracy, ChicagoAPIError
 from api.data_transformer import (
     transform_all_crashes,
     extract_ground_truth,
+    extract_ground_truth_5class,
     parse_crash_datetime,
     _safe_float,
 )
-from api.prediction import predict, model_manager
+from api.prediction import (
+    predict,
+    predict_hierarchical,
+    predict_zones,
+    model_manager,
+)
 from api.models import PredictionRequest
+from api.config import MODEL_REGISTRY, DEFAULT_MODEL
 
 logger = logging.getLogger(__name__)
 
-# Class labels in order
-CLASS_LABELS = ["NO_INJURY", "MINOR", "SEVERE"]
+# Class labels for different model types
+CLASS_LABELS_3CLASS = ["NO_INJURY", "MINOR", "SEVERE"]
+CLASS_LABELS_5CLASS = [
+    "NO_INJURY",
+    "REPORTED_NOT_EVIDENT",
+    "NONINCAPACITATING",
+    "INCAPACITATING",
+    "FATAL",
+]
+
+# Backwards compatibility
+CLASS_LABELS = CLASS_LABELS_3CLASS
+
+
+def get_class_labels_for_model(model_name: str) -> list[str]:
+    """Get the appropriate class labels for a model.
+
+    Args:
+        model_name: Name of the model in the registry.
+
+    Returns:
+        List of class labels for this model type.
+    """
+    if model_name not in MODEL_REGISTRY:
+        return CLASS_LABELS_3CLASS
+
+    model_type = MODEL_REGISTRY[model_name].model_type
+    if model_type == "hierarchical":
+        return CLASS_LABELS_5CLASS
+    return CLASS_LABELS_3CLASS
 
 
 def compute_confusion_matrix(
@@ -200,12 +240,15 @@ def compute_f1_scores(
 def evaluate_accuracy(
     days: int = 7,
     max_crashes: int = 10000,
+    model_name: str | None = None,
 ) -> dict[str, Any]:
     """Evaluate model accuracy on recent real crash data.
 
     Args:
         days: Number of days back to fetch data
         max_crashes: Maximum number of crashes to evaluate
+        model_name: Name of the model to evaluate (from MODEL_REGISTRY).
+                   If None, uses DEFAULT_MODEL.
 
     Returns:
         Dictionary containing accuracy metrics and individual predictions
@@ -213,21 +256,32 @@ def evaluate_accuracy(
     Raises:
         RuntimeError: If the model is not trained/available
     """
+    # Resolve model name
+    if model_name is None:
+        model_name = DEFAULT_MODEL
+
+    # Validate model exists
+    if model_name not in MODEL_REGISTRY:
+        raise ValueError(f"Unknown model: {model_name}")
+
+    model_info = MODEL_REGISTRY[model_name]
+    model_type = model_info.model_type
+
     logger.info(
-        f"Starting accuracy evaluation (days={days}, max_crashes={max_crashes})"
+        f"Starting accuracy evaluation (model={model_name}, type={model_type}, "
+        f"days={days}, max_crashes={max_crashes})"
     )
 
-    # Ensure model is loaded
-    if not model_manager.is_model_loaded():
-        from api.config import DEFAULT_MODEL
+    # Load the model
+    try:
+        model_manager.load_model(model_name)
+    except ValueError as e:
+        raise RuntimeError(
+            f"Model '{model_name}' not available. Please train the model first."
+        ) from e
 
-        try:
-            model_manager.load_model(DEFAULT_MODEL)
-        except ValueError as e:
-            raise RuntimeError(
-                "Model not available. Please train the model first by running: "
-                "python training/main_simplified.py"
-            ) from e
+    # Determine class labels for this model
+    class_labels = get_class_labels_for_model(model_name)
 
     # Fetch data from Chicago API
     try:
@@ -244,9 +298,12 @@ def evaluate_accuracy(
                 "sample_count": 0,
                 "per_class_metrics": {},
                 "confusion_matrix": [],
-                "class_labels": CLASS_LABELS,
+                "class_labels": class_labels,
                 "time_range_days": days,
                 "computed_at": datetime.now().isoformat(),
+                "f1_macro": 0.0,
+                "f1_micro": 0.0,
+                "model_name": model_name,
             },
             "predictions": [],
         }
@@ -266,24 +323,50 @@ def evaluate_accuracy(
                 "sample_count": 0,
                 "per_class_metrics": {},
                 "confusion_matrix": [],
-                "class_labels": CLASS_LABELS,
+                "class_labels": class_labels,
                 "time_range_days": days,
                 "computed_at": datetime.now().isoformat(),
+                "f1_macro": 0.0,
+                "f1_micro": 0.0,
+                "model_name": model_name,
             },
             "predictions": [],
         }
 
-    # Make predictions
+    # Make predictions based on model type
     y_true = []
     y_pred = []
     predictions = []
 
-    for crash, request, ground_truth in transformed:
+    for crash, request, ground_truth_3class in transformed:
         try:
-            # Get prediction
-            response = predict(request)
-            predicted = response.prediction
-            confidence = response.confidence
+            # Get ground truth based on model type
+            if model_type == "hierarchical":
+                ground_truth = extract_ground_truth_5class(crash)
+                if ground_truth is None:
+                    continue
+            else:
+                ground_truth = ground_truth_3class
+
+            # Get prediction based on model type
+            if model_type == "simplified":
+                response = predict(request, model_name)
+                predicted = response.prediction
+                confidence = response.confidence
+            elif model_type == "hierarchical":
+                response = predict_hierarchical(request)
+                predicted = response.prediction
+                confidence = response.confidence
+            elif model_type == "zones":
+                # Zone model requires lat/lng
+                if request.latitude is None or request.longitude is None:
+                    continue
+                response = predict_zones(request)
+                predicted = response.prediction
+                confidence = response.confidence
+            else:
+                # Skip unsupported model types (e.g., regression)
+                continue
 
             y_true.append(ground_truth)
             y_pred.append(predicted)
@@ -312,15 +395,15 @@ def evaluate_accuracy(
             logger.warning(f"Failed to predict for crash: {e}")
             continue
 
-    # Compute metrics
-    confusion_matrix = compute_confusion_matrix(y_true, y_pred)
-    class_metrics = compute_class_metrics(confusion_matrix)
+    # Compute metrics with appropriate class labels
+    confusion_matrix = compute_confusion_matrix(y_true, y_pred, labels=class_labels)
+    class_metrics = compute_class_metrics(confusion_matrix, labels=class_labels)
     overall_accuracy = compute_overall_accuracy(y_true, y_pred)
-    f1_scores = compute_f1_scores(class_metrics)
+    f1_scores = compute_f1_scores(class_metrics, labels=class_labels)
 
     logger.info(
         f"Accuracy evaluation complete: {len(predictions)} predictions, "
-        f"accuracy={overall_accuracy:.2%}"
+        f"accuracy={overall_accuracy:.2%}, model={model_name}"
     )
 
     return {
@@ -329,13 +412,70 @@ def evaluate_accuracy(
             "sample_count": len(predictions),
             "per_class_metrics": class_metrics,
             "confusion_matrix": confusion_matrix,
-            "class_labels": CLASS_LABELS,
+            "class_labels": class_labels,
             "time_range_days": days,
             "computed_at": datetime.now().isoformat(),
             "f1_macro": f1_scores["f1_macro"],
             "f1_micro": f1_scores["f1_micro"],
+            "model_name": model_name,
         },
         "predictions": predictions,
+    }
+
+
+def evaluate_all_models(
+    days: int = 7,
+    max_crashes: int = 2000,
+) -> dict[str, Any]:
+    """Evaluate all classification models for comparison.
+
+    Args:
+        days: Number of days back to fetch data
+        max_crashes: Maximum number of crashes to evaluate (lower for comparison)
+
+    Returns:
+        Dictionary with comparison results for each model
+    """
+    # Only compare classification models, not regression
+    classification_models = [
+        name
+        for name, info in MODEL_REGISTRY.items()
+        if info.model_type in ("simplified", "hierarchical", "zones")
+    ]
+
+    results = {}
+
+    for model_name in classification_models:
+        try:
+            logger.info(f"Evaluating model: {model_name}")
+            result = evaluate_accuracy(
+                days=days,
+                max_crashes=max_crashes,
+                model_name=model_name,
+            )
+            results[model_name] = {
+                "model_name": model_name,
+                "display_name": MODEL_REGISTRY[model_name].name,
+                "model_type": MODEL_REGISTRY[model_name].model_type,
+                "metrics": result["metrics"],
+                "status": "success",
+            }
+        except Exception as e:
+            logger.warning(f"Failed to evaluate {model_name}: {e}")
+            results[model_name] = {
+                "model_name": model_name,
+                "display_name": MODEL_REGISTRY[model_name].name,
+                "model_type": MODEL_REGISTRY[model_name].model_type,
+                "metrics": None,
+                "status": "error",
+                "error": str(e),
+            }
+
+    return {
+        "models": results,
+        "time_range_days": days,
+        "max_crashes": max_crashes,
+        "computed_at": datetime.now().isoformat(),
     }
 
 
@@ -343,6 +483,7 @@ def get_map_data(
     days: int = 7,
     max_crashes: int = 200,
     filter_correct: bool | None = None,
+    model_name: str | None = None,
 ) -> list[dict[str, Any]]:
     """Get prediction data formatted for map display.
 
@@ -350,11 +491,14 @@ def get_map_data(
         days: Number of days back to fetch
         max_crashes: Maximum number of crashes
         filter_correct: If True, only correct; if False, only incorrect; if None, all
+        model_name: Name of the model to use (defaults to DEFAULT_MODEL)
 
     Returns:
         List of prediction records with coordinates for map display
     """
-    result = evaluate_accuracy(days=days, max_crashes=max_crashes)
+    result = evaluate_accuracy(
+        days=days, max_crashes=max_crashes, model_name=model_name
+    )
     predictions = result["predictions"]
 
     # Filter based on correctness if specified
