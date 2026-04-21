@@ -35,6 +35,8 @@ from api.models import (
     MapPrediction,
     MapDataResponse,
     RocDataResponse,
+    ModelComparisonResponse,
+    ModelComparisonResult,
 )
 from api.prediction import (
     predict,
@@ -44,7 +46,7 @@ from api.prediction import (
     predict_by_zone_id,
     predict_all_zones,
 )
-from api.accuracy_service import evaluate_accuracy, get_map_data
+from api.accuracy_service import evaluate_accuracy, evaluate_all_models, get_map_data
 from api.chicago_client import ChicagoAPIError
 
 logging.basicConfig(
@@ -245,6 +247,7 @@ async def list_models():
 async def get_accuracy(
     days: int = 7,
     max_crashes: int = 10000,
+    model: str | None = None,
 ):
     """Evaluate model accuracy on recent real crash data from Chicago.
 
@@ -254,6 +257,8 @@ async def get_accuracy(
     Args:
         days: Number of days back to fetch data (1, 7, 30, or 90)
         max_crashes: Maximum number of crashes to evaluate (default 10000, max 10000)
+        model: Model to evaluate (simplified_3class, hierarchical_5class, simplified_zones).
+               Defaults to simplified_3class.
 
     Returns:
         AccuracyResponse with metrics and individual predictions
@@ -265,8 +270,22 @@ async def get_accuracy(
     # Cap max_crashes to prevent excessive API calls
     max_crashes = min(max(max_crashes, 10), 10000)
 
+    # Validate model parameter
+    if model is not None and model not in MODEL_REGISTRY:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown model: {model}. Available models: {list(MODEL_REGISTRY.keys())}",
+        )
+
+    # Skip regression model for accuracy evaluation
+    if model is not None and MODEL_REGISTRY[model].model_type == "regression":
+        raise HTTPException(
+            status_code=400,
+            detail="Regression model is not supported for accuracy evaluation",
+        )
+
     try:
-        result = evaluate_accuracy(days=days, max_crashes=max_crashes)
+        result = evaluate_accuracy(days=days, max_crashes=max_crashes, model_name=model)
 
         # Convert to response models
         metrics = AccuracyMetrics(
@@ -282,6 +301,7 @@ async def get_accuracy(
             computed_at=result["metrics"]["computed_at"],
             f1_macro=result["metrics"]["f1_macro"],
             f1_micro=result["metrics"]["f1_micro"],
+            model_name=result["metrics"].get("model_name"),
         )
 
         predictions = [PredictionWithActual(**p) for p in result["predictions"]]
@@ -295,10 +315,90 @@ async def get_accuracy(
         )
     except RuntimeError as e:
         raise HTTPException(status_code=503, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.exception("Accuracy evaluation error")
         raise HTTPException(
             status_code=500, detail=f"Accuracy evaluation failed: {str(e)}"
+        )
+
+
+@app.get(
+    "/api/accuracy/compare", response_model=ModelComparisonResponse, tags=["Accuracy"]
+)
+async def get_accuracy_comparison(
+    days: int = 7,
+    max_crashes: int = 2000,
+):
+    """Compare accuracy of all available classification models.
+
+    Evaluates all classification models (simplified, hierarchical, zones)
+    on the same dataset for fair comparison.
+
+    Args:
+        days: Number of days back to fetch data (1, 7, 30, or 90)
+        max_crashes: Maximum number of crashes per model (default 2000 for faster comparison)
+
+    Returns:
+        ModelComparisonResponse with metrics for each model
+    """
+    # Validate days parameter
+    if days not in [1, 7, 30, 90]:
+        days = 7
+
+    # Cap max_crashes for comparison (keep lower for performance)
+    max_crashes = min(max(max_crashes, 100), 5000)
+
+    try:
+        result = evaluate_all_models(days=days, max_crashes=max_crashes)
+
+        # Convert to response models
+        models = {}
+        for model_name, model_result in result["models"].items():
+            metrics = None
+            if model_result["metrics"] is not None:
+                metrics = AccuracyMetrics(
+                    overall_accuracy=model_result["metrics"]["overall_accuracy"],
+                    sample_count=model_result["metrics"]["sample_count"],
+                    per_class_metrics={
+                        k: ClassMetrics(**v)
+                        for k, v in model_result["metrics"]["per_class_metrics"].items()
+                    },
+                    confusion_matrix=model_result["metrics"]["confusion_matrix"],
+                    class_labels=model_result["metrics"]["class_labels"],
+                    time_range_days=model_result["metrics"]["time_range_days"],
+                    computed_at=model_result["metrics"]["computed_at"],
+                    f1_macro=model_result["metrics"]["f1_macro"],
+                    f1_micro=model_result["metrics"]["f1_micro"],
+                    model_name=model_result["model_name"],
+                )
+
+            models[model_name] = ModelComparisonResult(
+                model_name=model_result["model_name"],
+                display_name=model_result["display_name"],
+                model_type=model_result["model_type"],
+                metrics=metrics,
+                status=model_result["status"],
+                error=model_result.get("error"),
+            )
+
+        return ModelComparisonResponse(
+            models=models,
+            time_range_days=result["time_range_days"],
+            max_crashes=result["max_crashes"],
+            computed_at=result["computed_at"],
+        )
+
+    except ChicagoAPIError as e:
+        logger.error(f"Chicago API error: {e}")
+        raise HTTPException(
+            status_code=503, detail=f"Failed to fetch data from Chicago API: {str(e)}"
+        )
+    except Exception as e:
+        logger.exception("Model comparison error")
+        raise HTTPException(
+            status_code=500, detail=f"Model comparison failed: {str(e)}"
         )
 
 
@@ -307,6 +407,7 @@ async def get_accuracy_map_data(
     days: int = 7,
     max_crashes: int = 200,
     filter: str | None = None,
+    model: str | None = None,
 ):
     """Get prediction data formatted for map visualization.
 
@@ -316,6 +417,7 @@ async def get_accuracy_map_data(
         days: Number of days back to fetch data
         max_crashes: Maximum number of crashes (default 200 for map performance)
         filter: Optional filter - 'correct', 'incorrect', or None for all
+        model: Model to use (defaults to simplified_3class)
 
     Returns:
         MapDataResponse with prediction coordinates and summary counts
@@ -339,6 +441,7 @@ async def get_accuracy_map_data(
             days=days,
             max_crashes=max_crashes,
             filter_correct=filter_correct,
+            model_name=model,
         )
 
         # Convert to response model

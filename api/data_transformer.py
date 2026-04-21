@@ -14,7 +14,7 @@ from api.models import PredictionRequest
 
 logger = logging.getLogger(__name__)
 
-# Mapping from API injury values to our model's severity classes
+# Mapping from API injury values to our model's severity classes (3-class)
 INJURY_TO_SEVERITY = {
     # Severe injuries
     "FATAL": "SEVERE",
@@ -23,6 +23,15 @@ INJURY_TO_SEVERITY = {
     "NONINCAPACITATING INJURY": "MINOR",
     "REPORTED, NOT EVIDENT": "MINOR",
     # No injury
+    "NO INDICATION OF INJURY": "NO_INJURY",
+}
+
+# Mapping from API injury values to 5-class labels (hierarchical model)
+INJURY_TO_5CLASS = {
+    "FATAL": "FATAL",
+    "INCAPACITATING INJURY": "INCAPACITATING",
+    "NONINCAPACITATING INJURY": "NONINCAPACITATING",
+    "REPORTED, NOT EVIDENT": "REPORTED_NOT_EVIDENT",
     "NO INDICATION OF INJURY": "NO_INJURY",
 }
 
@@ -97,6 +106,39 @@ def extract_ground_truth(crash: dict[str, Any]) -> str | None:
         return "MINOR"
     if _safe_int(crash.get("injuries_reported_not_evident")) > 0:
         return "MINOR"
+
+    # If no injuries indicated
+    total_injuries = _safe_int(crash.get("injuries_total"))
+    if total_injuries == 0:
+        return "NO_INJURY"
+
+    return None
+
+
+def extract_ground_truth_5class(crash: dict[str, Any]) -> str | None:
+    """Extract the ground truth 5-class severity from a crash record.
+
+    Args:
+        crash: Crash record from the API
+
+    Returns:
+        5-class severity label or None if unknown.
+        Labels: NO_INJURY, REPORTED_NOT_EVIDENT, NONINCAPACITATING, INCAPACITATING, FATAL
+    """
+    # Try most_severe_injury first (from crashes dataset)
+    injury = crash.get("most_severe_injury")
+    if injury and injury in INJURY_TO_5CLASS:
+        return INJURY_TO_5CLASS[injury]
+
+    # Fallback to injury counts (in order of severity)
+    if _safe_int(crash.get("injuries_fatal")) > 0:
+        return "FATAL"
+    if _safe_int(crash.get("injuries_incapacitating")) > 0:
+        return "INCAPACITATING"
+    if _safe_int(crash.get("injuries_non_incapacitating")) > 0:
+        return "NONINCAPACITATING"
+    if _safe_int(crash.get("injuries_reported_not_evident")) > 0:
+        return "REPORTED_NOT_EVIDENT"
 
     # If no injuries indicated
     total_injuries = _safe_int(crash.get("injuries_total"))
@@ -376,6 +418,9 @@ def transform_crash_to_request(
             crash_hour=max(min(crash_hour, 23), 0),
             crash_day_of_week=max(min(crash_day_of_week, 7), 1),
             crash_month=max(min(crash_month, 12), 1),
+            # Location for zone-based model
+            latitude=_safe_float(crash.get("latitude")) or None,
+            longitude=_safe_float(crash.get("longitude")) or None,
         )
     except Exception as e:
         logger.warning(f"Failed to transform crash {crash.get('crash_record_id')}: {e}")

@@ -361,6 +361,9 @@ class AccuracyMetrics(BaseModel):
     computed_at: datetime
     f1_macro: float = Field(ge=0, le=1)
     f1_micro: float = Field(ge=0, le=1)
+    model_name: str | None = Field(
+        default=None, description="Name of the model evaluated"
+    )
 
 
 class PredictionWithActual(BaseModel):
@@ -434,3 +437,26 @@ class RocDataResponse(BaseModel):
     model_name: str = Field(description="Name of the model")
     generated_at: str = Field(description="ISO timestamp when data was generated")
     curves: list[RocCurve] = Field(description="ROC curves for each classifier level")
+# Model comparison response models
+class ModelComparisonResult(BaseModel):
+    """Accuracy results for a single model in comparison."""
+
+    model_name: str = Field(description="Internal model name/key")
+    display_name: str = Field(description="Human-readable model name")
+    model_type: str = Field(description="Model type (simplified, hierarchical, zones)")
+    metrics: AccuracyMetrics | None = Field(
+        default=None, description="Accuracy metrics (None if model failed)"
+    )
+    status: Literal["success", "error"] = Field(description="Evaluation status")
+    error: str | None = Field(default=None, description="Error message if failed")
+
+
+class ModelComparisonResponse(BaseModel):
+    """Response schema for comparing multiple models."""
+
+    models: dict[str, ModelComparisonResult] = Field(
+        description="Results keyed by model name"
+    )
+    time_range_days: int = Field(description="Time range used for evaluation")
+    max_crashes: int = Field(description="Max crashes evaluated per model")
+    computed_at: datetime = Field(description="When comparison was computed")
