@@ -9,12 +9,33 @@ API Documentation: https://dev.socrata.com/docs/endpoints.html
 from __future__ import annotations
 
 import logging
+import os
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 import requests
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+# Look for .env in the Crash-Prediction directory (parent of api/)
+env_path = Path(__file__).resolve().parent.parent / ".env"
+load_dotenv(env_path)
 
 logger = logging.getLogger(__name__)
+
+# Chicago SODA API credentials (optional but recommended for higher rate limits)
+# Set to None or empty string to disable token authentication
+CHICAGO_API_TOKEN = os.environ.get("CHICAGO_API_TOKEN", "").strip() or None
+CHICAGO_API_SECRET = os.environ.get("CHICAGO_API_SECRET", "").strip() or None
+
+if CHICAGO_API_TOKEN:
+    logger.info("Chicago API token configured - using authenticated requests")
+else:
+    logger.warning(
+        "No Chicago API token configured - using unauthenticated requests "
+        "(lower rate limits). Set CHICAGO_API_TOKEN in .env for higher limits."
+    )
 
 # Chicago Open Data Portal base URL
 BASE_URL = "https://data.cityofchicago.org/resource"
@@ -59,8 +80,14 @@ def _make_request(
     """
     url = f"{BASE_URL}/{dataset_id}.json"
 
+    # Add API token header if available (increases rate limits)
+    headers = {}
+    if CHICAGO_API_TOKEN:
+        headers["X-App-Token"] = CHICAGO_API_TOKEN
+        logger.debug("Using Chicago API token for authenticated request")
+
     try:
-        response = requests.get(url, params=params, timeout=timeout)
+        response = requests.get(url, params=params, headers=headers, timeout=timeout)
         response.raise_for_status()
         return response.json()
     except requests.exceptions.Timeout:
@@ -263,7 +290,7 @@ def get_weather_data(
 
 
 def fetch_crash_data_for_accuracy(
-    days: int = 7, max_crashes: int = 500
+    days: int = 7, max_crashes: int = 10000
 ) -> dict[str, Any]:
     """Fetch all data needed for accuracy calculation.
 
