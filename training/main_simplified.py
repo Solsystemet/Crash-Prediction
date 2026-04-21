@@ -57,7 +57,7 @@ from training.hierarchical.simplified_classifier import (
     SimplifiedTreeClassifier,
     save_simplified_model,
 )
-from training.hierarchical.evaluation import plot_roc_curves
+from training.hierarchical.evaluation import plot_roc_curves, export_roc_data
 from training.feature_selection import filter_by_importance
 
 logging.basicConfig(
@@ -482,6 +482,16 @@ def run_simplified_pipeline(
         y_proba_levels=y_proba_levels,
         save_path=roc_path,
         title="ROC Curves - Simplified 3-Class Classifier",
+    )
+
+    # Export ROC data as JSON for frontend visualization
+    model_dir = PROJECT_ROOT / "models" / "trained" / "simplified_3class"
+    roc_json_path = model_dir / "roc_data.json"
+    export_roc_data(
+        y_true_levels=y_true_levels,
+        y_proba_levels=y_proba_levels,
+        save_path=roc_json_path,
+        model_name="simplified_3class",
     )
 
     logger.info(f"ROC curves saved to {roc_path}")

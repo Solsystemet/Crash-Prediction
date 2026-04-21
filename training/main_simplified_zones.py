@@ -61,7 +61,7 @@ from training.hierarchical.simplified_classifier import (
     SimplifiedTreeClassifier,
     save_simplified_model,
 )
-from training.hierarchical.evaluation import plot_roc_curves
+from training.hierarchical.evaluation import plot_roc_curves, export_roc_data
 from training.feature_selection import filter_by_importance
 
 logging.basicConfig(
@@ -872,6 +872,15 @@ def _plot_aggregate_roc(
         y_proba_levels=y_proba_levels,
         save_path=save_path,
         title="ROC Curves - Zone-Based Simplified Classifier (Aggregated)",
+    )
+
+    # Export ROC data as JSON for frontend visualization
+    roc_json_path = output_dir / "roc_data.json"
+    export_roc_data(
+        y_true_levels=y_true_levels,
+        y_proba_levels=y_proba_levels,
+        save_path=roc_json_path,
+        model_name="simplified_zones",
     )
 
     # Log summary
