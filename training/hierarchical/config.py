@@ -59,6 +59,7 @@ class TreeHierarchicalConfig(HierarchicalConfig):
         l3_sampling_strategy: SMOTE ratio for L3.
         l2_weight_multiplier: Extra weight multiplier for L2 positive class.
         l25_weight_multiplier: Extra weight multiplier for L2.5 positive class.
+        l2_resampling_method: Resampling method for L2 ('borderline' or 'adasyn').
         n_estimators: Number of trees in ensemble.
         max_depth: Maximum tree depth.
         n_jobs: Parallel jobs (-1 for all cores).
@@ -72,13 +73,16 @@ class TreeHierarchicalConfig(HierarchicalConfig):
 
     # SMOTE sampling strategies (ratio of minority to majority)
     l1_sampling_strategy: float = 0.5
-    l2_sampling_strategy: float = 0.7
+    l2_sampling_strategy: float = 1.0   # Full balance for better severe detection
     l25_sampling_strategy: float = 1.0  # Full balance for rare FATAL class
     l3_sampling_strategy: float = 0.5
 
     # Class weight multipliers for imbalanced levels
-    l2_weight_multiplier: float = 1.5
+    l2_weight_multiplier: float = 3.0   # Increased from 1.5 for better severe recall
     l25_weight_multiplier: float = 5.0  # Aggressive weighting for FATAL
+
+    # Resampling method for L2 ('borderline' or 'adasyn')
+    l2_resampling_method: Literal["borderline", "adasyn"] = "adasyn"
 
     # Tree hyperparameters
     n_estimators: int = 200
@@ -146,6 +150,10 @@ class SimplifiedTreeConfig:
         l1_sampling_strategy: SMOTE ratio for L1.
         l2_sampling_strategy: SMOTE ratio for L2.
         l2_weight_multiplier: Extra weight for severe class.
+        l2_resampling_method: Resampling method for L2 ('borderline' or 'adasyn').
+        use_global_l2: If True, train a single global L2 model on all injury data
+            instead of per-zone models. This helps when severe cases are rare.
+        l2_target_recall: Target recall for L2 threshold optimization.
         n_estimators: Number of trees in ensemble.
         max_depth: Maximum tree depth.
         n_jobs: Parallel jobs (-1 for all cores).
@@ -159,7 +167,7 @@ class SimplifiedTreeConfig:
 
     # Classification thresholds
     l1_threshold: float = 0.3
-    l2_threshold: float = 0.3
+    l2_threshold: float = 0.2  # Lower default for better severe recall
 
     # Model types per level
     l1_model: Literal["rf", "xgb", "et", "lgbm"] = "lgbm"
@@ -167,10 +175,20 @@ class SimplifiedTreeConfig:
 
     # SMOTE sampling strategies
     l1_sampling_strategy: float = 0.5
-    l2_sampling_strategy: float = 0.7
+    l2_sampling_strategy: float = 1.0  # Full balance for better severe detection
 
-    # Class weight multiplier for severe class
-    l2_weight_multiplier: float = 1.5
+    # Class weight multiplier for severe class (increased from 1.5)
+    l2_weight_multiplier: float = 3.0
+
+    # Resampling method for L2 ('borderline' or 'adasyn')
+    # ADASYN focuses on harder-to-learn samples, improving minority class detection
+    l2_resampling_method: Literal["borderline", "adasyn"] = "adasyn"
+
+    # Global L2 model option: train on all injury data for better severe detection
+    use_global_l2: bool = False
+
+    # Target recall for L2 threshold optimization (prioritize catching severe cases)
+    l2_target_recall: float = 0.6  # Increased from 0.5
 
     # Tree hyperparameters
     n_estimators: int = 200

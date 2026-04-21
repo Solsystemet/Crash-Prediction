@@ -302,12 +302,18 @@ def _binary_metrics(y_true: np.ndarray, y_pred: np.ndarray, prefix: str) -> dict
 def run_simplified_pipeline(
     sample_size: int | None = None,
     feature_filter: str = "drop-low",
+    l2_weight_multiplier: float | None = None,
+    l2_resampling_method: str | None = None,
+    l2_target_recall: float | None = None,
 ) -> dict:
     """Run the simplified 3-class classification pipeline.
 
     Args:
         sample_size: Optional limit on dataset size for faster experimentation.
         feature_filter: Feature filtering mode ("none" or "drop-low").
+        l2_weight_multiplier: Override for L2 class weight multiplier.
+        l2_resampling_method: Override for L2 resampling method ('borderline' or 'adasyn').
+        l2_target_recall: Override for L2 target recall during threshold optimization.
 
     Returns:
         Dictionary of evaluation results.
@@ -317,6 +323,15 @@ def run_simplified_pipeline(
     logger.info("=" * 60)
 
     config = SimplifiedTreeConfig(sample_size=sample_size)
+
+    # Apply CLI overrides to config
+    if l2_weight_multiplier is not None:
+        config.l2_weight_multiplier = l2_weight_multiplier
+    if l2_resampling_method is not None:
+        config.l2_resampling_method = l2_resampling_method
+    if l2_target_recall is not None:
+        config.l2_target_recall = l2_target_recall
+
     logger.info(f"Configuration: {config}")
 
     # Load and merge data
@@ -404,6 +419,7 @@ def run_simplified_pipeline(
         l1_sampling_strategy=config.l1_sampling_strategy,
         l2_sampling_strategy=config.l2_sampling_strategy,
         l2_weight_multiplier=config.l2_weight_multiplier,
+        l2_resampling_method=config.l2_resampling_method,
         n_estimators=config.n_estimators,
         max_depth=config.max_depth,
         n_jobs=config.n_jobs,
@@ -420,7 +436,7 @@ def run_simplified_pipeline(
         X_val,
         targets_val,
         l1_target_recall=0.7,
-        l2_target_recall=0.5,
+        l2_target_recall=config.l2_target_recall,
     )
 
     # Evaluate
@@ -498,12 +514,38 @@ if __name__ == "__main__":
         default="drop-low",
         help="Feature filtering mode: 'none' (all features), 'drop-low' (drop DROP features), 'drop-review' (drop DROP + REVIEW features). Default: drop-low",
     )
+    # L2 tuning options (same as main_simplified_zones.py)
+    parser.add_argument(
+        "--l2-weight",
+        type=float,
+        default=None,
+        help="Class weight multiplier for severe class (default: 3.0). "
+             "Higher values prioritize severe recall over precision.",
+    )
+    parser.add_argument(
+        "--l2-resampling",
+        type=str,
+        choices=["borderline", "adasyn"],
+        default=None,
+        help="Resampling method for L2 classifier (default: adasyn). "
+             "ADASYN focuses on harder-to-learn samples.",
+    )
+    parser.add_argument(
+        "--l2-target-recall",
+        type=float,
+        default=None,
+        help="Target recall for L2 threshold optimization (default: 0.6). "
+             "Higher values catch more severe cases but increase false positives.",
+    )
 
     args = parser.parse_args()
 
     results = run_simplified_pipeline(
         sample_size=args.sample,
         feature_filter=args.feature_filter,
+        l2_weight_multiplier=args.l2_weight,
+        l2_resampling_method=args.l2_resampling,
+        l2_target_recall=args.l2_target_recall,
     )
 
     print("\n" + "=" * 60)
