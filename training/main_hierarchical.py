@@ -56,7 +56,7 @@ from training.hierarchical import (
     prepare_hierarchical_targets,
     evaluate_hierarchical,
 )
-from training.hierarchical.evaluation import plot_roc_curves
+from training.hierarchical.evaluation import plot_roc_curves, export_roc_data
 from training.hierarchical.tree_classifier import save_hierarchical_model
 from training.feature_selection import filter_by_importance
 
@@ -397,6 +397,16 @@ def run_hierarchical_pipeline(
         y_proba_levels=y_proba_levels,
         save_path=roc_path,
         title="ROC Curves - Hierarchical 5-Class Classifier",
+    )
+
+    # Export ROC data as JSON for frontend visualization
+    model_dir = PROJECT_ROOT / "models" / "trained" / "hierarchical_5class"
+    roc_json_path = model_dir / "roc_data.json"
+    export_roc_data(
+        y_true_levels=y_true_levels,
+        y_proba_levels=y_proba_levels,
+        save_path=roc_json_path,
+        model_name="hierarchical_5class",
     )
 
     logger.info(f"ROC curves saved to {roc_path}")

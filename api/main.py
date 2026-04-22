@@ -13,7 +13,7 @@ import logging
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
-from api.config import MODEL_REGISTRY, DEFAULT_MODEL, FEATURE_OPTIONS
+from api.config import MODEL_REGISTRY, DEFAULT_MODEL, FEATURE_OPTIONS, MODELS_DIR
 from api.models import (
     PredictionRequest,
     PredictionResponse,
@@ -34,6 +34,7 @@ from api.models import (
     PredictionWithActual,
     MapPrediction,
     MapDataResponse,
+    RocDataResponse,
     ModelComparisonResponse,
     ModelComparisonResult,
 )
@@ -464,6 +465,61 @@ async def get_accuracy_map_data(
     except Exception as e:
         logger.exception("Map data error")
         raise HTTPException(status_code=500, detail=f"Failed to get map data: {str(e)}")
+
+
+# ============================================================================
+# ROC Curve Data Endpoint
+# ============================================================================
+
+
+@app.get("/api/models/{model_name}/roc", response_model=RocDataResponse, tags=["Models"])
+async def get_model_roc_data(model_name: str):
+    """Get ROC curve data for a trained model.
+
+    Returns pre-computed ROC curve data (FPR/TPR points and AUC scores)
+    generated during model training. Used for frontend ROC visualizations.
+
+    Args:
+        model_name: Name of the model (e.g., 'simplified_3class', 'hierarchical_5class')
+
+    Returns:
+        RocDataResponse with curve data for each classifier level
+    """
+    import json
+
+    # Validate model name
+    if model_name not in MODEL_REGISTRY:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Model '{model_name}' not found. Available: {list(MODEL_REGISTRY.keys())}",
+        )
+
+    # Look for ROC data file
+    roc_path = MODELS_DIR / model_name / "roc_data.json"
+
+    if not roc_path.exists():
+        raise HTTPException(
+            status_code=404,
+            detail=f"ROC data not found for model '{model_name}'. "
+            "Re-train the model to generate ROC data.",
+        )
+
+    try:
+        with open(roc_path, "r") as f:
+            data = json.load(f)
+        return RocDataResponse(**data)
+    except json.JSONDecodeError as e:
+        logger.error(f"Invalid JSON in ROC data file: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail="ROC data file is corrupted. Re-train the model.",
+        )
+    except Exception as e:
+        logger.exception("Error reading ROC data")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to read ROC data: {str(e)}",
+        )
 
 
 if __name__ == "__main__":

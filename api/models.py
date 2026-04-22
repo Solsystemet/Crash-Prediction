@@ -414,6 +414,29 @@ class MapDataResponse(BaseModel):
     incorrect_count: int = Field(ge=0)
 
 
+# ============================================================================
+# ROC Curve Data Models
+# ============================================================================
+
+
+class RocCurve(BaseModel):
+    """Single ROC curve data for one classifier level."""
+
+    name: str = Field(description="Level name (e.g., 'L1 (INJURY vs NO_INJURY)')")
+    auc: float = Field(ge=0, le=1, description="Area under the curve score")
+    color: str = Field(description="Suggested color for the curve (hex)")
+    fpr: list[float] = Field(description="False positive rate points")
+    tpr: list[float] = Field(description="True positive rate points")
+    n_samples: int = Field(ge=0, description="Number of samples used")
+    n_positive: int = Field(ge=0, description="Number of positive samples")
+
+
+class RocDataResponse(BaseModel):
+    """Response schema for ROC curve data."""
+
+    model_name: str = Field(description="Name of the model")
+    generated_at: str = Field(description="ISO timestamp when data was generated")
+    curves: list[RocCurve] = Field(description="ROC curves for each classifier level")
 # Model comparison response models
 class ModelComparisonResult(BaseModel):
     """Accuracy results for a single model in comparison."""
