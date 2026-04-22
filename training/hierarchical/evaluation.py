@@ -3,7 +3,9 @@
 Provides model-agnostic evaluation that works with any HierarchicalClassifierBase.
 """
 
+import json
 import logging
+from datetime import datetime
 from pathlib import Path
 
 import numpy as np
@@ -271,3 +273,102 @@ def plot_roc_curves(
             logger.warning(f"  WARNING: {level_name} AUC < 0.5, model may be inverted")
 
     return auc_scores
+
+
+def _downsample_curve(
+    fpr: np.ndarray,
+    tpr: np.ndarray,
+    max_points: int = 100,
+) -> tuple[list[float], list[float]]:
+    """Downsample ROC curve points for efficient JSON export.
+
+    Keeps first, last, and evenly spaced points in between.
+
+    Args:
+        fpr: False positive rate array.
+        tpr: True positive rate array.
+        max_points: Maximum number of points to keep.
+
+    Returns:
+        Tuple of (fpr_list, tpr_list) downsampled and converted to Python lists.
+    """
+    n_points = len(fpr)
+
+    if n_points <= max_points:
+        return fpr.tolist(), tpr.tolist()
+
+    # Keep evenly spaced indices, always including first and last
+    indices = np.linspace(0, n_points - 1, max_points, dtype=int)
+    indices = np.unique(indices)  # Remove duplicates
+
+    return fpr[indices].tolist(), tpr[indices].tolist()
+
+
+def export_roc_data(
+    y_true_levels: dict[str, np.ndarray],
+    y_proba_levels: dict[str, np.ndarray],
+    save_path: str | Path,
+    model_name: str = "model",
+    max_points: int = 100,
+) -> dict:
+    """Export ROC curve data as JSON for frontend visualization.
+
+    Args:
+        y_true_levels: Dict mapping level name to true binary labels.
+        y_proba_levels: Dict mapping level name to predicted probabilities.
+        save_path: Path to save the JSON file.
+        model_name: Name of the model for metadata.
+        max_points: Maximum points per curve (downsampled for performance).
+
+    Returns:
+        The exported data dictionary.
+    """
+    curves = []
+    colors = ["#3b82f6", "#f97316", "#22c55e", "#ef4444"]  # Tailwind blue, orange, green, red
+
+    for i, (level_name, y_true) in enumerate(y_true_levels.items()):
+        y_proba = y_proba_levels.get(level_name)
+
+        if y_proba is None or len(y_true) == 0:
+            continue
+
+        if len(np.unique(y_true)) < 2:
+            continue
+
+        try:
+            fpr, tpr, thresholds = roc_curve(y_true, y_proba)
+            auc = roc_auc_score(y_true, y_proba)
+
+            # Downsample for JSON export
+            fpr_list, tpr_list = _downsample_curve(fpr, tpr, max_points)
+
+            curves.append({
+                "name": level_name,
+                "auc": round(auc, 4),
+                "color": colors[i % len(colors)],
+                "fpr": fpr_list,
+                "tpr": tpr_list,
+                "n_samples": int(len(y_true)),
+                "n_positive": int(np.sum(y_true)),
+            })
+
+        except Exception as e:
+            logger.warning(f"Error computing ROC for {level_name}: {e}")
+            continue
+
+    data = {
+        "model_name": model_name,
+        "generated_at": datetime.now().isoformat(),
+        "curves": curves,
+    }
+
+    # Save JSON
+    save_path = Path(save_path)
+    save_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with open(save_path, "w") as f:
+        json.dump(data, f, indent=2)
+
+    logger.info(f"ROC data exported to {save_path}")
+
+    return data
