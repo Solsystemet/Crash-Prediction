@@ -414,8 +414,23 @@ def filter_by_importance(
         )
         return X_df, feature_cols, result
 
-    # Load importance data
-    importance_df = load_feature_importance(importance_csv)
+    # Load importance data (gracefully handle missing CSV)
+    try:
+        importance_df = load_feature_importance(importance_csv)
+    except FileNotFoundError:
+        if verbose:
+            logger.warning(
+                f"Feature importance CSV not found. Skipping feature filtering. "
+                f"Run feature analysis first or use --feature-filter none."
+            )
+        result = ImportanceFilterResult(
+            kept_features=feature_cols.copy(),
+            dropped_features=[],
+            n_original=len(feature_cols),
+            n_kept=len(feature_cols),
+            missing_features=[],
+        )
+        return X_df, feature_cols, result
     importance_map = dict(zip(importance_df["feature_name"], importance_df["recommendation"]))
 
     # Categorize features
