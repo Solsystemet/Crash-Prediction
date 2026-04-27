@@ -35,6 +35,9 @@ from api.models import (
     MapPrediction,
     MapDataResponse,
     RocDataResponse,
+    RocCurve,
+    RocModelResult,
+    RocComparisonResponse,
     ModelComparisonResponse,
     ModelComparisonResult,
 )
@@ -46,7 +49,13 @@ from api.prediction import (
     predict_by_zone_id,
     predict_all_zones,
 )
-from api.accuracy_service import evaluate_accuracy, evaluate_all_models, get_map_data
+from api.accuracy_service import (
+    evaluate_accuracy,
+    evaluate_all_models,
+    get_map_data,
+    get_roc_data,
+    get_all_models_roc_data,
+)
 from api.chicago_client import ChicagoAPIError
 
 logging.basicConfig(
@@ -243,11 +252,25 @@ async def list_models():
 # ============================================================================
 
 
+def _parse_date(date_str: str | None):
+    """Parse a date string (YYYY-MM-DD) to datetime."""
+    from datetime import datetime as dt
+
+    if not date_str:
+        return None
+    try:
+        return dt.strptime(date_str, "%Y-%m-%d")
+    except ValueError:
+        return None
+
+
 @app.get("/api/accuracy", response_model=AccuracyResponse, tags=["Accuracy"])
 async def get_accuracy(
-    days: int = 7,
+    days: int | None = None,
     max_crashes: int = 10000,
     model: str | None = None,
+    start_date: str | None = None,
+    end_date: str | None = None,
 ):
     """Evaluate model accuracy on recent real crash data from Chicago.
 
@@ -255,17 +278,31 @@ async def get_accuracy(
     runs predictions, and compares against actual outcomes.
 
     Args:
-        days: Number of days back to fetch data (1, 7, 30, or 90)
+        days: Number of days back to fetch data (1, 7, 30, or 90). Used if start_date/end_date not provided.
         max_crashes: Maximum number of crashes to evaluate (default 10000, max 10000)
         model: Model to evaluate (simplified_3class, hierarchical_5class, simplified_zones).
                Defaults to simplified_3class.
+        start_date: Start of date range (YYYY-MM-DD format)
+        end_date: End of date range (YYYY-MM-DD format)
 
     Returns:
         AccuracyResponse with metrics and individual predictions
     """
-    # Validate days parameter
-    if days not in [1, 7, 30, 90]:
-        days = 7  # Default to 7 days if invalid
+    # Parse date parameters
+    parsed_start = _parse_date(start_date)
+    parsed_end = _parse_date(end_date)
+
+    # If date range provided, use it; otherwise validate days
+    if parsed_start and parsed_end:
+        # Use date range
+        pass
+    elif days is not None:
+        # Validate days parameter
+        if days not in [1, 7, 30, 90]:
+            days = 7  # Default to 7 days if invalid
+    else:
+        # Default to 7 days
+        days = 7
 
     # Cap max_crashes to prevent excessive API calls
     max_crashes = min(max(max_crashes, 10), 10000)
@@ -285,7 +322,13 @@ async def get_accuracy(
         )
 
     try:
-        result = evaluate_accuracy(days=days, max_crashes=max_crashes, model_name=model)
+        result = evaluate_accuracy(
+            days=days,
+            max_crashes=max_crashes,
+            model_name=model,
+            start_date=parsed_start,
+            end_date=parsed_end,
+        )
 
         # Convert to response models
         metrics = AccuracyMetrics(
@@ -328,8 +371,10 @@ async def get_accuracy(
     "/api/accuracy/compare", response_model=ModelComparisonResponse, tags=["Accuracy"]
 )
 async def get_accuracy_comparison(
-    days: int = 7,
+    days: int | None = None,
     max_crashes: int = 2000,
+    start_date: str | None = None,
+    end_date: str | None = None,
 ):
     """Compare accuracy of all available classification models.
 
@@ -337,21 +382,37 @@ async def get_accuracy_comparison(
     on the same dataset for fair comparison.
 
     Args:
-        days: Number of days back to fetch data (1, 7, 30, or 90)
+        days: Number of days back to fetch data (1, 7, 30, or 90). Used if start_date/end_date not provided.
         max_crashes: Maximum number of crashes per model (default 2000 for faster comparison)
+        start_date: Start of date range (YYYY-MM-DD format)
+        end_date: End of date range (YYYY-MM-DD format)
 
     Returns:
         ModelComparisonResponse with metrics for each model
     """
-    # Validate days parameter
-    if days not in [1, 7, 30, 90]:
+    # Parse date parameters
+    parsed_start = _parse_date(start_date)
+    parsed_end = _parse_date(end_date)
+
+    # If date range provided, use it; otherwise validate days
+    if parsed_start and parsed_end:
+        pass
+    elif days is not None:
+        if days not in [1, 7, 30, 90]:
+            days = 7
+    else:
         days = 7
 
     # Cap max_crashes for comparison (keep lower for performance)
     max_crashes = min(max(max_crashes, 100), 5000)
 
     try:
-        result = evaluate_all_models(days=days, max_crashes=max_crashes)
+        result = evaluate_all_models(
+            days=days,
+            max_crashes=max_crashes,
+            start_date=parsed_start,
+            end_date=parsed_end,
+        )
 
         # Convert to response models
         models = {}
@@ -404,26 +465,39 @@ async def get_accuracy_comparison(
 
 @app.get("/api/accuracy/map", response_model=MapDataResponse, tags=["Accuracy"])
 async def get_accuracy_map_data(
-    days: int = 7,
+    days: int | None = None,
     max_crashes: int = 200,
     filter: str | None = None,
     model: str | None = None,
+    start_date: str | None = None,
+    end_date: str | None = None,
 ):
     """Get prediction data formatted for map visualization.
 
     Returns crash predictions with coordinates for displaying on a map.
 
     Args:
-        days: Number of days back to fetch data
+        days: Number of days back to fetch data. Used if start_date/end_date not provided.
         max_crashes: Maximum number of crashes (default 200 for map performance)
         filter: Optional filter - 'correct', 'incorrect', or None for all
         model: Model to use (defaults to simplified_3class)
+        start_date: Start of date range (YYYY-MM-DD format)
+        end_date: End of date range (YYYY-MM-DD format)
 
     Returns:
         MapDataResponse with prediction coordinates and summary counts
     """
-    # Validate days parameter
-    if days not in [1, 7, 30, 90]:
+    # Parse date parameters
+    parsed_start = _parse_date(start_date)
+    parsed_end = _parse_date(end_date)
+
+    # If date range provided, use it; otherwise validate days
+    if parsed_start and parsed_end:
+        pass
+    elif days is not None:
+        if days not in [1, 7, 30, 90]:
+            days = 7
+    else:
         days = 7
 
     # Cap max_crashes for map performance
@@ -442,6 +516,8 @@ async def get_accuracy_map_data(
             max_crashes=max_crashes,
             filter_correct=filter_correct,
             model_name=model,
+            start_date=parsed_start,
+            end_date=parsed_end,
         )
 
         # Convert to response model
@@ -472,7 +548,9 @@ async def get_accuracy_map_data(
 # ============================================================================
 
 
-@app.get("/api/models/{model_name}/roc", response_model=RocDataResponse, tags=["Models"])
+@app.get(
+    "/api/models/{model_name}/roc", response_model=RocDataResponse, tags=["Models"]
+)
 async def get_model_roc_data(model_name: str):
     """Get ROC curve data for a trained model.
 
@@ -519,6 +597,173 @@ async def get_model_roc_data(model_name: str):
         raise HTTPException(
             status_code=500,
             detail=f"Failed to read ROC data: {str(e)}",
+        )
+
+
+@app.get("/api/accuracy/roc", response_model=RocDataResponse, tags=["Accuracy"])
+async def get_accuracy_roc_data(
+    days: int | None = None,
+    max_crashes: int = 2000,
+    model: str | None = None,
+    start_date: str | None = None,
+    end_date: str | None = None,
+):
+    """Get ROC curve data computed from live accuracy evaluation.
+
+    Runs predictions on recent crash data and computes ROC curves for each
+    classification level of the model.
+
+    Args:
+        days: Number of days back to fetch data (1, 7, 30, or 90). Used if start_date/end_date not provided.
+        max_crashes: Maximum number of crashes to evaluate
+        model: Model to evaluate (defaults to simplified_3class)
+        start_date: Start of date range (YYYY-MM-DD format)
+        end_date: End of date range (YYYY-MM-DD format)
+
+    Returns:
+        RocDataResponse with curve data for each classifier level
+    """
+    # Parse date parameters
+    parsed_start = _parse_date(start_date)
+    parsed_end = _parse_date(end_date)
+
+    # If date range provided, use it; otherwise validate days
+    if parsed_start and parsed_end:
+        pass
+    elif days is not None:
+        if days not in [1, 7, 30, 90]:
+            days = 7
+    else:
+        days = 7
+
+    # Cap max_crashes
+    max_crashes = min(max(max_crashes, 100), 5000)
+
+    # Validate model parameter
+    if model is not None and model not in MODEL_REGISTRY:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown model: {model}. Available models: {list(MODEL_REGISTRY.keys())}",
+        )
+
+    # Skip regression model
+    if model is not None and MODEL_REGISTRY[model].model_type == "regression":
+        raise HTTPException(
+            status_code=400,
+            detail="Regression model is not supported for ROC curves",
+        )
+
+    try:
+        result = get_roc_data(
+            days=days,
+            max_crashes=max_crashes,
+            model_name=model,
+            start_date=parsed_start,
+            end_date=parsed_end,
+        )
+
+        # Convert to response model
+        curves = [RocCurve(**c) for c in result["curves"]]
+
+        return RocDataResponse(
+            model_name=result["model_name"],
+            model_type=result["model_type"],
+            curves=curves,
+            computed_at=result["computed_at"],
+        )
+
+    except ChicagoAPIError as e:
+        logger.error(f"Chicago API error: {e}")
+        raise HTTPException(
+            status_code=503, detail=f"Failed to fetch data from Chicago API: {str(e)}"
+        )
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.exception("ROC data error")
+        raise HTTPException(
+            status_code=500, detail=f"Failed to compute ROC data: {str(e)}"
+        )
+
+
+@app.get(
+    "/api/accuracy/roc/compare", response_model=RocComparisonResponse, tags=["Accuracy"]
+)
+async def get_roc_comparison(
+    days: int | None = None,
+    max_crashes: int = 2000,
+    start_date: str | None = None,
+    end_date: str | None = None,
+):
+    """Get ROC curve data for all classification models.
+
+    Computes ROC curves for each model on the same dataset for comparison.
+
+    Args:
+        days: Number of days back to fetch data (1, 7, 30, or 90). Used if start_date/end_date not provided.
+        max_crashes: Maximum number of crashes per model
+        start_date: Start of date range (YYYY-MM-DD format)
+        end_date: End of date range (YYYY-MM-DD format)
+
+    Returns:
+        RocComparisonResponse with ROC data for each model
+    """
+    # Parse date parameters
+    parsed_start = _parse_date(start_date)
+    parsed_end = _parse_date(end_date)
+
+    # If date range provided, use it; otherwise validate days
+    if parsed_start and parsed_end:
+        pass
+    elif days is not None:
+        if days not in [1, 7, 30, 90]:
+            days = 7
+    else:
+        days = 7
+
+    # Cap max_crashes
+    max_crashes = min(max(max_crashes, 100), 5000)
+
+    try:
+        result = get_all_models_roc_data(
+            days=days,
+            max_crashes=max_crashes,
+            start_date=parsed_start,
+            end_date=parsed_end,
+        )
+
+        # Convert to response models
+        models = {}
+        for model_name, model_result in result["models"].items():
+            curves = [RocCurve(**c) for c in model_result["curves"]]
+
+            models[model_name] = RocModelResult(
+                model_name=model_result["model_name"],
+                display_name=model_result["display_name"],
+                model_type=model_result["model_type"],
+                curves=curves,
+                status=model_result["status"],
+                error=model_result.get("error"),
+            )
+
+        return RocComparisonResponse(
+            models=models,
+            time_range_days=result["time_range_days"],
+            max_crashes=result["max_crashes"],
+            computed_at=result["computed_at"],
+        )
+
+    except ChicagoAPIError as e:
+        logger.error(f"Chicago API error: {e}")
+        raise HTTPException(
+            status_code=503, detail=f"Failed to fetch data from Chicago API: {str(e)}"
+        )
+    except Exception as e:
+        logger.exception("ROC comparison error")
+        raise HTTPException(
+            status_code=500, detail=f"Failed to compute ROC comparison: {str(e)}"
         )
 
 
