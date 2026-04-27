@@ -10,7 +10,8 @@ class ModelType(str, Enum):
     """Available model types for prediction."""
 
     SIMPLIFIED = "simplified"  # 3-class severity
-    HIERARCHICAL = "hierarchical"  # 5-class severity
+    HIERARCHICAL = "hierarchical"  # 5-class severity (binary cascade)
+    MULTICLASS_NN = "multiclass_nn"  # 5-class severity (neural network)
     ZONES = "zones"  # Zone-based severity
     REGRESSION = "regression"  # Crash count prediction
 
