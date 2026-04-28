@@ -104,28 +104,46 @@ def _format_date(dt: datetime) -> str:
 
 
 def get_recent_crashes(
-    days: int = 7,
+    days: int | None = 7,
     limit: int = DEFAULT_LIMIT,
     offset: int = 0,
+    start_date: datetime | None = None,
+    end_date: datetime | None = None,
 ) -> list[dict[str, Any]]:
     """Fetch recent crash records from the Chicago API.
 
     Args:
-        days: Number of days back to fetch crashes
+        days: Number of days back to fetch crashes (used if start_date/end_date not provided)
         limit: Maximum number of records to return
         offset: Number of records to skip (for pagination)
+        start_date: Start of date range (inclusive)
+        end_date: End of date range (inclusive)
 
     Returns:
         List of crash records
     """
     # Calculate date range
-    end_date = datetime.now()
-    start_date = end_date - timedelta(days=days)
+    if start_date is not None and end_date is not None:
+        # Use provided date range
+        query_start = start_date
+        query_end = end_date
+        logger.info(
+            f"Fetching crashes from {query_start.date()} to {query_end.date()} (limit={limit}, offset={offset})"
+        )
+    else:
+        # Use days-based calculation
+        query_end = datetime.now()
+        query_start = query_end - timedelta(days=days or 7)
+        logger.info(
+            f"Fetching crashes from last {days} days (limit={limit}, offset={offset})"
+        )
 
     # Build SoQL query
     # We need crashes that have injury data (most_severe_injury is not null)
     where_clause = (
-        f"crash_date >= '{_format_date(start_date)}' AND most_severe_injury IS NOT NULL"
+        f"crash_date >= '{_format_date(query_start)}' "
+        f"AND crash_date <= '{_format_date(query_end)}' "
+        f"AND most_severe_injury IS NOT NULL"
     )
 
     params = {
@@ -135,10 +153,6 @@ def get_recent_crashes(
         "$order": "crash_date DESC",
     }
 
-    logger.info(
-        f"Fetching crashes from last {days} days (limit={limit}, offset={offset})"
-    )
-
     crashes = _make_request(CRASHES_DATASET, params)
     logger.info(f"Retrieved {len(crashes)} crash records")
 
@@ -146,13 +160,18 @@ def get_recent_crashes(
 
 
 def get_all_recent_crashes(
-    days: int = 7, max_records: int = 5000
+    days: int | None = 7,
+    max_records: int = 5000,
+    start_date: datetime | None = None,
+    end_date: datetime | None = None,
 ) -> list[dict[str, Any]]:
     """Fetch all recent crashes with pagination.
 
     Args:
-        days: Number of days back to fetch crashes
+        days: Number of days back to fetch crashes (used if start_date/end_date not provided)
         max_records: Maximum total records to fetch
+        start_date: Start of date range (inclusive)
+        end_date: End of date range (inclusive)
 
     Returns:
         List of all crash records within the time period
@@ -165,6 +184,8 @@ def get_all_recent_crashes(
             days=days,
             limit=min(DEFAULT_LIMIT, max_records - len(all_crashes)),
             offset=offset,
+            start_date=start_date,
+            end_date=end_date,
         )
 
         if not batch:
@@ -290,7 +311,10 @@ def get_weather_data(
 
 
 def fetch_crash_data_for_accuracy(
-    days: int = 7, max_crashes: int = 10000
+    days: int | None = 7,
+    max_crashes: int = 10000,
+    start_date: datetime | None = None,
+    end_date: datetime | None = None,
 ) -> dict[str, Any]:
     """Fetch all data needed for accuracy calculation.
 
@@ -298,18 +322,31 @@ def fetch_crash_data_for_accuracy(
     data in one call.
 
     Args:
-        days: Number of days back to fetch
+        days: Number of days back to fetch (used if start_date/end_date not provided)
         max_crashes: Maximum number of crashes to process
+        start_date: Start of date range (inclusive)
+        end_date: End of date range (inclusive)
 
     Returns:
         Dictionary with 'crashes', 'vehicles', 'people', and 'weather' keys
     """
-    logger.info(
-        f"Fetching crash data for accuracy calculation (days={days}, max={max_crashes})"
-    )
+    if start_date and end_date:
+        logger.info(
+            f"Fetching crash data for accuracy calculation "
+            f"(range={start_date.date()} to {end_date.date()}, max={max_crashes})"
+        )
+    else:
+        logger.info(
+            f"Fetching crash data for accuracy calculation (days={days}, max={max_crashes})"
+        )
 
     # Fetch crashes
-    crashes = get_all_recent_crashes(days=days, max_records=max_crashes)
+    crashes = get_all_recent_crashes(
+        days=days,
+        max_records=max_crashes,
+        start_date=start_date,
+        end_date=end_date,
+    )
 
     if not crashes:
         return {"crashes": [], "vehicles": [], "people": [], "weather": []}
