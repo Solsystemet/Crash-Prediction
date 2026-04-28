@@ -38,6 +38,12 @@ MODEL_REGISTRY: dict[str, ModelInfo] = {
         description="5-class hierarchical severity prediction with detailed injury levels",
         model_type="hierarchical",
     ),
+    "multiclass_nn": ModelInfo(
+        name="Neural Network 5-Class",
+        path=MODELS_DIR / "multiclass_nn",
+        description="5-class severity prediction using deep learning neural network",
+        model_type="multiclass_nn",
+    ),
     "simplified_zones": ModelInfo(
         name="Zone-Based Severity",
         path=MODELS_DIR / "simplified_zones",
@@ -59,6 +65,7 @@ DEFAULT_MODEL = "simplified_3class"
 MODEL_TYPE_REGISTRY = {
     "simplified": "simplified_3class",
     "hierarchical": "hierarchical_5class",
+    "multiclass_nn": "multiclass_nn",
     "zones": "simplified_zones",
     "regression": "regression_daily",
 }

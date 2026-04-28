@@ -6,6 +6,15 @@ based on input features from API requests.
 
 from __future__ import annotations
 
+# IMPORTANT: Set these BEFORE importing torch to prevent Windows deadlocks
+import os
+os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["MKL_NUM_THREADS"] = "1"
+os.environ["OPENBLAS_NUM_THREADS"] = "1"
+os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
+os.environ["NUMEXPR_NUM_THREADS"] = "1"
+os.environ["CUDA_VISIBLE_DEVICES"] = ""  # Disable CUDA entirely
+
 import logging
 from pathlib import Path
 from typing import Any, Union
@@ -63,6 +72,7 @@ class ModelManager:
         self._current_model: str | None = None
         self._zone_predictor: Any = None
         self._regression_predictor: Any = None
+        self._nn_classifier: Any = None
 
     def load_model(self, model_name: str = DEFAULT_MODEL) -> Any:
         """Load a model by name from the registry.
@@ -109,6 +119,11 @@ class ModelManager:
             from training.regression.predict import CrashCountPredictor
             model = CrashCountPredictor(model_path)
             self._regression_predictor = model
+        elif model_info.model_type == "multiclass_nn":
+            from training.multiclass.classifier import MulticlassNeuralClassifier
+            nn_model_path = model_path / "multiclass_nn.pt"
+            model = MulticlassNeuralClassifier.load(nn_model_path)
+            self._nn_classifier = model
         else:
             raise ValueError(f"Unknown model type: {model_info.model_type}")
 
@@ -210,6 +225,161 @@ class ModelManager:
 
 # Global model manager instance
 model_manager = ModelManager()
+
+
+def prepare_features_for_nn(request: PredictionRequest, num_classes: int = 5) -> np.ndarray:
+    """Prepare features specifically for the neural network model.
+
+    The neural network expects a specific set of features including
+    engineered features that are computed from the raw input.
+
+    Args:
+        request: PredictionRequest with input features.
+        num_classes: Number of output classes (default 5).
+
+    Returns:
+        NumPy array of features ready for neural network prediction.
+    """
+    import json
+    from api.config import MODELS_DIR
+
+    # Load the expected feature list
+    features_path = MODELS_DIR / "multiclass_nn" / "features.json"
+    with open(features_path) as f:
+        feature_cols = json.load(f)
+
+    # Determine high-impact crash types
+    high_impact_types = [
+        "HEAD ON", "PEDESTRIAN", "PEDALCYCLIST", "FIXED OBJECT",
+        "OVERTURNED", "TRAIN"
+    ]
+
+    # Build comprehensive feature mapping
+    feature_mapping = {
+        # Core crash info
+        "POSTED_SPEED_LIMIT": request.posted_speed_limit,
+        "LANE_CNT": 2,  # Default
+        "STREET_NO": 0,  # Default
+        "BEAT_OF_OCCURRENCE": 0,  # Default
+        "NUM_UNITS": request.vehicle_count,
+        "CRASH_HOUR": request.crash_hour,
+        "CRASH_DAY_OF_WEEK": request.crash_day_of_week,
+        "CRASH_MONTH": request.crash_month,
+        "VEHICLE_COUNT": request.vehicle_count,
+        "NEWEST_VEHICLE_YEAR": request.avg_vehicle_year,
+        "PERSON_COUNT": request.person_count,
+
+        # Age features
+        "age_clean_min": request.age_min,
+        "age_clean_max": request.age_max,
+        "age_clean_mean": request.age_mean,
+        "is_driver_sum": request.driver_count,
+
+        # Weather features
+        "Air Temperature": request.air_temperature,
+        "Humidity": request.humidity,
+        "Rain Intensity": request.rain_intensity,
+        "Interval Rain": request.rain_intensity,
+        "Total Rain": request.rain_intensity,
+        "Precipitation Type": 0,  # Default
+        "Wind Speed": request.wind_speed,
+        "Barometric Pressure": 30.0,  # Default
+
+        # Derived time features
+        "IS_PEAK_HOUR": 1 if request.crash_hour in [7, 8, 9, 16, 17, 18] else 0,
+        "IS_NIGHT": 1 if request.crash_hour < 6 or request.crash_hour >= 20 else 0,
+        "IS_WEEKEND": 1 if request.crash_day_of_week in [1, 7] else 0,
+
+        # Vehicle features
+        "VEHICLE_AGE": 2024 - request.oldest_vehicle_year,
+        "OLD_VEHICLE_FLAG": 1 if (2024 - request.oldest_vehicle_year) > 10 else 0,
+
+        # Risk features
+        "ADVERSE_CONDITIONS_COUNT": sum([
+            1 if request.weather_condition not in ["CLEAR", "CLOUDY/OVERCAST"] else 0,
+            1 if request.roadway_surface_cond != "DRY" else 0,
+            1 if request.lighting_condition in ["DARKNESS", "DUSK", "DAWN"] else 0,
+        ]),
+        "NIGHT_POOR_LIGHTING": 1 if (
+            (request.crash_hour < 6 or request.crash_hour >= 20) and
+            request.lighting_condition == "DARKNESS"
+        ) else 0,
+        "WET_ROAD": 1 if request.roadway_surface_cond in ["WET", "SNOW OR SLUSH", "ICE"] else 0,
+        "HIGH_SPEED_CRASH": 1 if request.posted_speed_limit >= 40 else 0,
+        "VERY_HIGH_SPEED": 1 if request.posted_speed_limit >= 55 else 0,
+        "MULTI_VEHICLE": 1 if request.vehicle_count > 2 else 0,
+        "INTERSECTION_CRASH": 1 if request.traffic_control_device in [
+            "TRAFFIC SIGNAL", "STOP SIGN/FLASHER", "YIELD"
+        ] else 0,
+        "HIGH_IMPACT_CRASH_TYPE": 1 if request.first_crash_type in high_impact_types else 0,
+        "SEVERE_DAMAGE_INDICATOR": 1 if request.damage == "OVER $1,500" else 0,
+        "HIT_AND_RUN": 0,  # Not available in request
+        "WORK_ZONE_CRASH": 0,  # Not available in request
+        "SEVERITY_RISK_SCORE": 0,  # Computed during training, use 0
+
+        # Categorical features (will be encoded)
+        "WEATHER_CONDITION": request.weather_condition,
+        "LIGHTING_CONDITION": request.lighting_condition,
+        "FIRST_CRASH_TYPE": request.first_crash_type,
+        "TRAFFICWAY_TYPE": request.trafficway_type,
+        "ROADWAY_SURFACE_COND": request.roadway_surface_cond,
+        "TRAFFIC_CONTROL_DEVICE": request.traffic_control_device,
+        "DEVICE_CONDITION": request.device_condition,
+        "ALIGNMENT": request.alignment,
+        "ROAD_DEFECT": request.road_defect,
+    }
+
+    # Get label encoders from the neural network model's training data
+    # For neural networks, categorical features were label-encoded during training
+    # We need to use the same encoding
+    from api.config import (
+        FIRST_CRASH_TYPE_OPTIONS,
+        DAMAGE_OPTIONS,
+        WEATHER_CONDITION_OPTIONS,
+        LIGHTING_CONDITION_OPTIONS,
+        ROADWAY_SURFACE_COND_OPTIONS,
+        TRAFFIC_CONTROL_DEVICE_OPTIONS,
+        DEVICE_CONDITION_OPTIONS,
+        TRAFFICWAY_TYPE_OPTIONS,
+        ROAD_DEFECT_OPTIONS,
+        ALIGNMENT_OPTIONS,
+    )
+
+    # Create label encoders for categorical features
+    categorical_encoders = {
+        "WEATHER_CONDITION": WEATHER_CONDITION_OPTIONS,
+        "LIGHTING_CONDITION": LIGHTING_CONDITION_OPTIONS,
+        "FIRST_CRASH_TYPE": FIRST_CRASH_TYPE_OPTIONS,
+        "TRAFFICWAY_TYPE": TRAFFICWAY_TYPE_OPTIONS,
+        "ROADWAY_SURFACE_COND": ROADWAY_SURFACE_COND_OPTIONS,
+        "TRAFFIC_CONTROL_DEVICE": TRAFFIC_CONTROL_DEVICE_OPTIONS,
+        "DEVICE_CONDITION": DEVICE_CONDITION_OPTIONS,
+        "ALIGNMENT": ALIGNMENT_OPTIONS,
+        "ROAD_DEFECT": ROAD_DEFECT_OPTIONS,
+    }
+
+    # Build feature array
+    features = []
+    for col in feature_cols:
+        if col in feature_mapping:
+            value = feature_mapping[col]
+
+            # Apply label encoding for categorical features
+            if col in categorical_encoders:
+                options = categorical_encoders[col]
+                str_value = str(value)
+                if str_value in options:
+                    value = options.index(str_value)
+                else:
+                    value = 0  # Default for unknown
+
+            features.append(float(value) if not isinstance(value, (int, float)) else value)
+        else:
+            # Feature not in mapping, use default value
+            logger.warning(f"NN Feature {col} not in mapping, using 0")
+            features.append(0.0)
+
+    return np.array([features], dtype=np.float32)
 
 
 def prepare_features_from_request(request: PredictionRequest) -> np.ndarray:
@@ -647,6 +817,47 @@ def predict_hierarchical(request: PredictionRequest) -> HierarchicalPredictionRe
     )
 
 
+def predict_multiclass_nn(request: PredictionRequest) -> HierarchicalPredictionResponse:
+    """Make a 5-class severity prediction using the neural network model.
+
+    Args:
+        request: PredictionRequest with input features.
+
+    Returns:
+        HierarchicalPredictionResponse with 5-class prediction and probabilities.
+    """
+    model_name = MODEL_TYPE_REGISTRY["multiclass_nn"]
+    model = model_manager.load_model(model_name)
+
+    # Prepare features - neural network uses same features as tree models
+    features = prepare_features_for_nn(request, model.config.num_classes)
+
+    # Get predictions
+    predictions = model.predict(features)
+    probabilities = model.predict_proba(features)
+
+    # probabilities is shape (1, 5) for 5 classes
+    probs = probabilities[0]
+
+    # Map to class names
+    prediction_idx = int(predictions[0])
+    prediction_label = HIERARCHICAL_CLASS_NAMES[prediction_idx]
+    confidence = float(probs[prediction_idx])
+
+    return HierarchicalPredictionResponse(
+        prediction=prediction_label,  # type: ignore
+        probabilities=HierarchicalProbabilities(
+            no_injury=float(probs[0]),
+            reported_not_evident=float(probs[1]),
+            nonincapacitating=float(probs[2]),
+            incapacitating=float(probs[3]),
+            fatal=float(probs[4]),
+        ),
+        confidence=confidence,
+        model_name=model_name,
+    )
+
+
 def predict_by_type(request: PredictionRequest) -> PredictionResponseType:
     """Make a prediction using the model type specified in the request.
 
@@ -671,6 +882,9 @@ def predict_by_type(request: PredictionRequest) -> PredictionResponseType:
 
     elif model_type == ModelType.HIERARCHICAL:
         return predict_hierarchical(request)
+
+    elif model_type == ModelType.MULTICLASS_NN:
+        return predict_multiclass_nn(request)
 
     elif model_type == ModelType.ZONES:
         return predict_zones(request)

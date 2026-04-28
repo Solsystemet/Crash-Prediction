@@ -36,8 +36,19 @@ from training.hierarchical.tree_classifier import (
     save_hierarchical_model,
     load_hierarchical_model,
 )
-from training.hierarchical.neural_classifier import HierarchicalNeuralClassifier
+# Lazy import to avoid torch deadlock on Windows
+# from training.hierarchical.neural_classifier import HierarchicalNeuralClassifier
 from training.hierarchical.evaluation import evaluate_hierarchical
+
+
+def get_neural_classifier():
+    """Lazy import of HierarchicalNeuralClassifier to avoid torch import at module load."""
+    from training.hierarchical.neural_classifier import HierarchicalNeuralClassifier
+    return HierarchicalNeuralClassifier
+
+
+# For backwards compatibility - will trigger torch import when accessed
+HierarchicalNeuralClassifier = None  # Use get_neural_classifier() instead
 
 # Simplified 3-class system
 from training.hierarchical.config import SimplifiedTreeConfig

@@ -7,6 +7,15 @@ Or:
     python -m api.main
 """
 
+# IMPORTANT: Set these BEFORE importing torch to prevent Windows deadlocks
+import os
+os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["MKL_NUM_THREADS"] = "1"
+os.environ["OPENBLAS_NUM_THREADS"] = "1"
+os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
+os.environ["NUMEXPR_NUM_THREADS"] = "1"
+os.environ["CUDA_VISIBLE_DEVICES"] = ""  # Disable CUDA entirely for API
+
 from contextlib import asynccontextmanager
 import logging
 

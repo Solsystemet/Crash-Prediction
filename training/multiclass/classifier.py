@@ -453,24 +453,42 @@ class MulticlassNeuralClassifier:
         logger.info(f"Model saved to {path}")
 
     @classmethod
-    def load(cls, path: str | Path) -> "MulticlassNeuralClassifier":
+    def load(cls, path: str | Path, force_cpu: bool = True) -> "MulticlassNeuralClassifier":
         """Load a trained model from checkpoint.
 
         Args:
             path: Path to the model checkpoint.
+            force_cpu: If True, force model to load on CPU (avoids Windows deadlocks).
 
         Returns:
             Loaded classifier ready for inference.
         """
-        checkpoint = torch.load(path, map_location="cpu")
+        import os
+        
+        # Prevent multiprocessing issues on Windows
+        os.environ["OMP_NUM_THREADS"] = "1"
+        os.environ["MKL_NUM_THREADS"] = "1"
+        torch.set_num_threads(1)
+        
+        checkpoint = torch.load(path, map_location="cpu", weights_only=False)
 
         config = checkpoint["config"]
-        classifier = cls(config)
+        
+        # Force CPU to avoid CUDA initialization deadlocks
+        if force_cpu:
+            config.device = "cpu"
+        
+        # Create classifier without triggering CUDA checks
+        classifier = object.__new__(cls)
+        classifier.config = config
+        classifier.device = torch.device("cpu")  # Always CPU for API inference
+        classifier.model = None
         classifier.num_features = checkpoint["num_features"]
-        classifier.class_weights = checkpoint["class_weights"]
         classifier.history = checkpoint["history"]
+        classifier.class_weights = checkpoint["class_weights"]
+        classifier.label_encoder = None
 
-        # Recreate model
+        # Recreate model on CPU
         classifier.model = MulticlassMLP(
             num_features=classifier.num_features,
             num_classes=config.num_classes,
@@ -483,5 +501,5 @@ class MulticlassNeuralClassifier:
         classifier.model.to(classifier.device)
         classifier.model.eval()
 
-        logger.info(f"Model loaded from {path}")
+        logger.info(f"Model loaded from {path} (device: {classifier.device})")
         return classifier
