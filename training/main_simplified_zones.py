@@ -63,6 +63,14 @@ from training.hierarchical.simplified_classifier import (
 )
 from training.hierarchical.evaluation import plot_roc_curves, export_roc_data
 from training.feature_selection import filter_by_importance
+from training.baselines import (
+    ClassificationBaseline,
+    compare_to_baseline,
+    log_comparison,
+    print_baseline_comparison_box,
+    add_baseline_args,
+    BaselineResult,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -664,6 +672,7 @@ def run_zoned_pipeline(
     l2_weight_multiplier: float | None = None,
     l2_resampling_method: str | None = None,
     l2_target_recall: float | None = None,
+    with_baseline: bool = True,
 ) -> list[ZoneResults]:
     """Run the zone-based simplified classification pipeline.
 
@@ -821,6 +830,67 @@ def run_zoned_pipeline(
         logger.info("\nGenerating ROC curves...")
         _plot_aggregate_roc(zone_roc_data, plots_dir)
 
+    # Global baseline comparison (across all zones)
+    if with_baseline and zone_classifiers:
+        # Compute aggregate metrics from zones
+        trained_zones = [r for r in zone_results if not r.skipped]
+        if trained_zones:
+            total_samples = sum(r.n_samples for r in trained_zones)
+            weighted_accuracy = sum(r.accuracy * r.n_samples for r in trained_zones) / total_samples
+            weighted_f1_macro = sum(r.f1_macro * r.n_samples for r in trained_zones) / total_samples
+            weighted_f1_weighted = sum(r.f1_weighted * r.n_samples for r in trained_zones) / total_samples
+            weighted_severe_recall = sum(r.recall_severe * r.n_samples for r in trained_zones) / total_samples
+
+            # Create baseline on class proportions
+            severe_prop = df["MOST_SEVERE_INJURY"].isin(["FATAL", "INCAPACITATING INJURY"]).mean()
+            minor_prop = df["MOST_SEVERE_INJURY"].isin(["NONINCAPACITATING INJURY", "REPORTED, NOT EVIDENT"]).mean()
+            no_injury_prop = 1.0 - severe_prop - minor_prop
+
+            # Most frequent baseline metrics
+            baseline_accuracy = no_injury_prop
+            baseline_f1_macro = (2 * no_injury_prop / (1 + no_injury_prop)) / 3
+            baseline_f1_weighted = no_injury_prop * 2 * no_injury_prop / (1 + no_injury_prop)
+            baseline_severe_recall = 0.0  # Always predicts NO_INJURY, never catches SEVERE
+
+            # Build baseline result
+            baseline_results = {
+                "most_frequent": BaselineResult(
+                    strategy="most_frequent",
+                    metrics={
+                        "accuracy": baseline_accuracy,
+                        "f1_macro": baseline_f1_macro,
+                        "f1_weighted": baseline_f1_weighted,
+                        "recall_SEVERE": baseline_severe_recall,
+                    },
+                ),
+            }
+
+            # Model metrics
+            model_metrics = {
+                "accuracy": weighted_accuracy,
+                "f1_macro": weighted_f1_macro,
+                "f1_weighted": weighted_f1_weighted,
+                "recall_SEVERE": weighted_severe_recall,
+            }
+
+            comparison = compare_to_baseline(model_metrics, baseline_results)
+
+            # Print comparison box
+            print_baseline_comparison_box(
+                model_metrics=model_metrics,
+                baseline_results=baseline_results,
+                comparison=comparison,
+                model_name="Zone Ensemble",
+                baseline_strategy="most_frequent",
+                primary_metric="recall_SEVERE",
+                metric_labels={
+                    "accuracy": "Accuracy",
+                    "f1_macro": "F1 Macro",
+                    "f1_weighted": "F1 Weighted",
+                    "recall_SEVERE": "SEVERE Recall",
+                },
+            )
+
     return zone_results
 
 
@@ -947,6 +1017,7 @@ if __name__ == "__main__":
         help="Target recall for L2 threshold optimization (default: 0.6). "
              "Higher values catch more severe cases but increase false positives.",
     )
+    add_baseline_args(parser)
 
     args = parser.parse_args()
 
@@ -959,6 +1030,7 @@ if __name__ == "__main__":
         l2_weight_multiplier=args.l2_weight,
         l2_resampling_method=args.l2_resampling,
         l2_target_recall=args.l2_target_recall,
+        with_baseline=not args.no_baseline,
     )
 
     # Final results

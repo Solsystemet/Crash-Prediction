@@ -59,6 +59,13 @@ from training.hierarchical import (
 from training.hierarchical.evaluation import plot_roc_curves, export_roc_data
 from training.hierarchical.tree_classifier import save_hierarchical_model
 from training.feature_selection import filter_by_importance
+from training.baselines import (
+    ClassificationBaseline,
+    compare_to_baseline,
+    log_comparison,
+    print_baseline_comparison_box,
+    add_baseline_args,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -210,6 +217,7 @@ def run_hierarchical_pipeline(
     model_type: Literal["tree", "neural"] = "tree",
     sample_size: int | None = None,
     feature_filter: str = "drop-low",
+    with_baseline: bool = True,
 ) -> dict:
     """Run the full hierarchical classification pipeline.
 
@@ -341,6 +349,51 @@ def run_hierarchical_pipeline(
     logger.info("\n[6/6] Evaluating on test set...")
     results = evaluate_hierarchical(clf, X_test, targets_test)
 
+    # Baseline evaluation
+    if with_baseline:
+        class_names = list(targets.label_encoder.classes_)
+        baseline = ClassificationBaseline(
+            strategies=["most_frequent", "stratified"],
+            random_state=config.random_state,
+        )
+        baseline.fit(targets_train.y_original)
+        baseline_results = baseline.evaluate(
+            targets_test.y_original,
+            class_names=class_names,
+        )
+
+        # Compare model to baseline
+        model_metrics = {
+            "accuracy": results.get("mc_accuracy", 0),
+            "f1_macro": results.get("mc_f1_macro", 0),
+            "f1_weighted": results.get("mc_f1_weighted", 0),
+            "recall_FATAL": results.get("recall_FATAL", 0),
+        }
+        comparison = compare_to_baseline(model_metrics, baseline_results)
+
+        # Print comparison box (use stratified baseline since we stratified-sample the training data)
+        print_baseline_comparison_box(
+            model_metrics=model_metrics,
+            baseline_results=baseline_results,
+            comparison=comparison,
+            model_name="Hierarchical Classifier",
+            baseline_strategy="stratified",
+            primary_metric="recall_FATAL",
+            metric_labels={
+                "accuracy": "Accuracy",
+                "f1_macro": "F1 Macro",
+                "f1_weighted": "F1 Weighted",
+                "recall_FATAL": "FATAL Recall",
+            },
+        )
+
+        # Store baseline results
+        results["baseline"] = {
+            strategy: result.metrics
+            for strategy, result in baseline_results.items()
+        }
+        results["baseline_comparison"] = comparison
+
     # Summary
     logger.info("\n" + "=" * 60)
     logger.info("SUMMARY")
@@ -447,6 +500,7 @@ if __name__ == "__main__":
         default="drop-low",
         help="Feature filtering mode: 'none' (all features), 'drop-low' (drop DROP features), 'drop-review' (drop DROP + REVIEW features). Default: drop-low",
     )
+    add_baseline_args(parser)
 
     args = parser.parse_args()
 
@@ -454,6 +508,7 @@ if __name__ == "__main__":
         model_type=args.model,
         sample_size=args.sample,
         feature_filter=args.feature_filter,
+        with_baseline=not args.no_baseline,
     )
 
     # Print final summary

@@ -59,6 +59,13 @@ from training.hierarchical.simplified_classifier import (
 )
 from training.hierarchical.evaluation import plot_roc_curves, export_roc_data
 from training.feature_selection import filter_by_importance
+from training.baselines import (
+    ClassificationBaseline,
+    compare_to_baseline,
+    log_comparison,
+    print_baseline_comparison_box,
+    add_baseline_args,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -305,6 +312,7 @@ def run_simplified_pipeline(
     l2_weight_multiplier: float | None = None,
     l2_resampling_method: str | None = None,
     l2_target_recall: float | None = None,
+    with_baseline: bool = True,
 ) -> dict:
     """Run the simplified 3-class classification pipeline.
 
@@ -443,6 +451,50 @@ def run_simplified_pipeline(
     logger.info("\n[6/6] Evaluating on test set...")
     results = evaluate_simplified(clf, X_test, targets_test)
 
+    # Baseline evaluation
+    if with_baseline:
+        baseline = ClassificationBaseline(
+            strategies=["most_frequent", "stratified"],
+            random_state=config.random_state,
+        )
+        baseline.fit(targets_train.y_simplified)
+        baseline_results = baseline.evaluate(
+            targets_test.y_simplified,
+            class_names=SIMPLIFIED_CLASS_NAMES,
+        )
+
+        # Compare model to baseline
+        model_metrics = {
+            "accuracy": results["accuracy"],
+            "f1_macro": results["f1_macro"],
+            "f1_weighted": results["f1_weighted"],
+            "recall_SEVERE": results.get("recall_SEVERE", 0),
+        }
+        comparison = compare_to_baseline(model_metrics, baseline_results)
+
+        # Print comparison box (use stratified baseline since we stratified-sample the training data)
+        print_baseline_comparison_box(
+            model_metrics=model_metrics,
+            baseline_results=baseline_results,
+            comparison=comparison,
+            model_name="Simplified Classifier",
+            baseline_strategy="stratified",
+            primary_metric="recall_SEVERE",
+            metric_labels={
+                "accuracy": "Accuracy",
+                "f1_macro": "F1 Macro",
+                "f1_weighted": "F1 Weighted",
+                "recall_SEVERE": "SEVERE Recall",
+            },
+        )
+
+        # Store baseline results
+        results["baseline"] = {
+            strategy: result.metrics
+            for strategy, result in baseline_results.items()
+        }
+        results["baseline_comparison"] = comparison
+
     # Summary
     logger.info("\n" + "=" * 60)
     logger.info("SUMMARY")
@@ -547,6 +599,7 @@ if __name__ == "__main__":
         help="Target recall for L2 threshold optimization (default: 0.6). "
              "Higher values catch more severe cases but increase false positives.",
     )
+    add_baseline_args(parser)
 
     args = parser.parse_args()
 
@@ -556,6 +609,7 @@ if __name__ == "__main__":
         l2_weight_multiplier=args.l2_weight,
         l2_resampling_method=args.l2_resampling,
         l2_target_recall=args.l2_target_recall,
+        with_baseline=not args.no_baseline,
     )
 
     print("\n" + "=" * 60)
