@@ -58,6 +58,13 @@ from training.regression.evaluation import (
     generate_report,
 )
 from training.regression.predict import CrashCountPredictor
+from training.baselines import (
+    RegressionBaseline,
+    compare_to_baseline,
+    log_comparison,
+    print_baseline_comparison_box,
+    add_baseline_args,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -73,6 +80,7 @@ def run_regression_pipeline(
     epochs: int = 100,
     batch_size: int = 64,
     save_model: bool = True,
+    with_baseline: bool = True,
 ) -> dict:
     """Run the full crash count regression pipeline.
 
@@ -221,6 +229,37 @@ def run_regression_pipeline(
     )
     logger.info(f"\nEnsemble improvement: {improvement:.1f}% lower MAE")
 
+    # Dummy baselines (mean/median)
+    baseline_results = {}
+    if with_baseline:
+        baseline = RegressionBaseline(strategies=["mean", "median"])
+        baseline.fit(y_train)
+        baseline_results = baseline.evaluate(y_test)
+
+        # Compare model to baseline
+        model_metrics = {
+            "mae": results["overall"]["mae"],
+            "rmse": results["overall"]["rmse"],
+            "r2": results["overall"]["r2"],
+        }
+        comparison = compare_to_baseline(model_metrics, baseline_results)
+
+        # Print comparison box
+        print_baseline_comparison_box(
+            model_metrics=model_metrics,
+            baseline_results=baseline_results,
+            comparison=comparison,
+            model_name="Ensemble",
+            baseline_strategy="mean",
+            primary_metric="mae",
+            metric_labels={
+                "mae": "MAE",
+                "rmse": "RMSE",
+                "r2": "R²",
+            },
+            task_type="regression",
+        )
+
     # Summary
     logger.info("\n" + "=" * 60)
     logger.info("SUMMARY")
@@ -270,6 +309,10 @@ def run_regression_pipeline(
         "per_zone": results.get("per_zone", {}),
         "global_baseline": global_metrics,
         "improvement_pct": improvement,
+        "baseline": {
+            strategy: result.metrics
+            for strategy, result in baseline_results.items()
+        } if baseline_results else {},
     }
 
 
@@ -313,6 +356,7 @@ if __name__ == "__main__":
         action="store_true",
         help="Don't save the trained model",
     )
+    add_baseline_args(parser)
 
     args = parser.parse_args()
 
@@ -323,6 +367,7 @@ if __name__ == "__main__":
         epochs=args.epochs,
         batch_size=args.batch_size,
         save_model=not args.no_save,
+        with_baseline=not args.no_baseline,
     )
 
     # Print final summary
