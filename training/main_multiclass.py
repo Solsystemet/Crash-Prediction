@@ -51,6 +51,7 @@ from training.multiclass.evaluation import (
     print_evaluation_summary,
     compare_with_baseline,
     get_roc_curve_data,
+    plot_multiclass_roc_curves,
 )
 from training.feature_selection import correlation_filter
 
@@ -274,6 +275,12 @@ def run_multiclass_pipeline(
     if sample_size is not None and len(df) > sample_size:
         df = stratified_sample_with_fatal(df, sample_size, random_state)
 
+    # Drop rows with missing target (can occur from joins in triple_merge)
+    initial_len = len(df)
+    df = df.dropna(subset=["MOST_SEVERE_INJURY"])
+    if len(df) < initial_len:
+        logger.warning(f"Dropped {initial_len - len(df)} rows with missing MOST_SEVERE_INJURY")
+
     # Engineer features
     logger.info("\n[2/7] Engineering features...")
     df = engineer_all_features(df, include_interactions=True, include_clusters=False)
@@ -379,6 +386,13 @@ def run_multiclass_pipeline(
         with open(roc_path, "w") as f:
             json.dump(roc_data, f, indent=2)
         logger.info(f"ROC data saved to {roc_path}")
+
+        # Plot ROC curves
+        roc_plot_path = output_dir / "roc_curves_multiclass.png"
+        plot_multiclass_roc_curves(
+            y_test, y_proba, SEVERITY_SHORT_NAMES, roc_plot_path,
+            title="ROC Curves - Multiclass Neural Network"
+        )
 
         # Save metrics summary
         metrics_summary = {

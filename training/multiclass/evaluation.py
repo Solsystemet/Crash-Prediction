@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -279,6 +280,88 @@ def get_roc_curve_data(
         }
 
     return roc_data
+
+
+def plot_multiclass_roc_curves(
+    y_true: NDArray[np.integer[Any]],
+    y_proba: NDArray[np.floating[Any]],
+    class_names: list[str] | None = None,
+    save_path: str | Path | None = None,
+    title: str = "ROC Curves - Multiclass Classifier",
+) -> dict[str, float]:
+    """Plot ROC curves for multiclass classification (one-vs-rest).
+
+    Args:
+        y_true: Ground truth labels.
+        y_proba: Predicted probabilities of shape (n_samples, n_classes).
+        class_names: Names for each class.
+        save_path: Path to save the plot PNG. If None, plot is not saved.
+        title: Plot title.
+
+    Returns:
+        Dictionary mapping class name to AUC score.
+    """
+    try:
+        import matplotlib.pyplot as plt
+    except ImportError:
+        logger.warning("matplotlib not available, skipping ROC plot")
+        return {}
+
+    num_classes = y_proba.shape[1]
+    class_names = class_names or DEFAULT_CLASS_NAMES[:num_classes]
+
+    auc_scores = {}
+
+    # Set up plot
+    fig, ax = plt.subplots(figsize=(10, 8))
+
+    # Color palette for different classes
+    colors = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd"]
+
+    for cls in range(num_classes):
+        y_true_binary = (y_true == cls).astype(int)
+
+        # Skip if no positive samples for this class
+        if np.sum(y_true_binary) == 0:
+            logger.warning(f"Skipping ROC for {class_names[cls]}: no samples")
+            continue
+
+        try:
+            fpr, tpr, _ = roc_curve(y_true_binary, y_proba[:, cls])
+            auc = roc_auc_score(y_true_binary, y_proba[:, cls])
+            auc_scores[class_names[cls]] = auc
+
+            # Plot curve
+            color = colors[cls % len(colors)]
+            ax.plot(
+                fpr, tpr, color=color, lw=2,
+                label=f"{class_names[cls]} (AUC = {auc:.3f})"
+            )
+        except Exception as e:
+            logger.warning(f"Error computing ROC for {class_names[cls]}: {e}")
+            continue
+
+    # Diagonal reference line
+    ax.plot([0, 1], [0, 1], "k--", lw=1, label="Random (AUC = 0.500)")
+
+    # Formatting
+    ax.set_xlim([0.0, 1.0])
+    ax.set_ylim([0.0, 1.05])
+    ax.set_xlabel("False Positive Rate", fontsize=12)
+    ax.set_ylabel("True Positive Rate", fontsize=12)
+    ax.set_title(title, fontsize=14)
+    ax.legend(loc="lower right", fontsize=10)
+    ax.grid(True, alpha=0.3)
+
+    plt.tight_layout()
+
+    if save_path:
+        plt.savefig(save_path, dpi=150, bbox_inches="tight")
+        logger.info(f"ROC plot saved to {save_path}")
+
+    plt.close(fig)
+
+    return auc_scores
 
 
 def get_pr_curve_data(
