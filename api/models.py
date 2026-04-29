@@ -436,8 +436,33 @@ class RocDataResponse(BaseModel):
     """Response schema for ROC curve data."""
 
     model_name: str = Field(description="Name of the model")
-    generated_at: str = Field(description="ISO timestamp when data was generated")
+    model_type: str | None = Field(default=None, description="Type of the model")
     curves: list[RocCurve] = Field(description="ROC curves for each classifier level")
+    computed_at: str = Field(description="ISO timestamp when data was computed")
+
+
+class RocModelResult(BaseModel):
+    """ROC curve results for a single model in comparison."""
+
+    model_name: str = Field(description="Internal model name/key")
+    display_name: str = Field(description="Human-readable model name")
+    model_type: str = Field(description="Model type")
+    curves: list[RocCurve] = Field(description="ROC curves for each class")
+    status: Literal["success", "error"] = Field(description="Evaluation status")
+    error: str | None = Field(default=None, description="Error message if failed")
+
+
+class RocComparisonResponse(BaseModel):
+    """Response schema for comparing ROC curves across multiple models."""
+
+    models: dict[str, RocModelResult] = Field(
+        description="ROC results keyed by model name"
+    )
+    time_range_days: int = Field(description="Time range used for evaluation")
+    max_crashes: int = Field(description="Max crashes evaluated per model")
+    computed_at: str = Field(description="When comparison was computed")
+
+
 # Model comparison response models
 class ModelComparisonResult(BaseModel):
     """Accuracy results for a single model in comparison."""

@@ -201,11 +201,13 @@ def prepare_features(df: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
     df_features = df[feature_cols].copy()
 
     # Add label-encoded safe categorical features
+    label_encoders = {}  # Store encoders for inference
     for col in safe_categorical_cols:
         if col in df.columns and col not in exclude_cols:
             le = LabelEncoder()
             values = df[col].fillna("UNKNOWN").astype(str)
             df_features[col] = le.fit_transform(values)
+            label_encoders[col] = le  # Save for later
             feature_cols.append(col)
 
     feature_cols = list(df_features.columns)
@@ -213,7 +215,7 @@ def prepare_features(df: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
     # Fill any remaining NaN
     df_features = df_features.fillna(0)
 
-    return df_features, feature_cols
+    return df_features, feature_cols, label_encoders
 
 
 def encode_severity_target(df: pd.DataFrame) -> tuple[np.ndarray, LabelEncoder]:
@@ -295,7 +297,7 @@ def run_multiclass_pipeline(
 
     # Prepare features
     logger.info("\n[3/7] Preparing feature matrix...")
-    X_df, feature_cols = prepare_features(df)
+    X_df, feature_cols, label_encoders = prepare_features(df)
     logger.info(f"Feature matrix shape (before filtering): {X_df.shape}")
 
     # Apply correlation filtering
@@ -380,6 +382,17 @@ def run_multiclass_pipeline(
         model_path = output_dir / "multiclass_nn.pt"
         classifier.save(model_path)
 
+        # Save the scaler for inference
+        import joblib
+        scaler_path = output_dir / "scaler.joblib"
+        joblib.dump(scaler, scaler_path)
+        logger.info(f"Scaler saved to {scaler_path}")
+
+        # Save label encoders for categorical features
+        encoders_path = output_dir / "label_encoders.joblib"
+        joblib.dump(label_encoders, encoders_path)
+        logger.info(f"Label encoders saved to {encoders_path}")
+
         # Save ROC curve data
         roc_data = get_roc_curve_data(y_test, y_proba, SEVERITY_SHORT_NAMES)
         roc_path = output_dir / "roc_data.json"
@@ -429,6 +442,7 @@ def run_multiclass_pipeline(
         "baseline_comparison": baseline_comparison,
         "feature_cols": filtered_feature_cols,
         "scaler": scaler,
+        "label_encoders": label_encoders,
         "label_encoder": label_encoder,
     }
 

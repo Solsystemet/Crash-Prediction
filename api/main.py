@@ -44,6 +44,9 @@ from api.models import (
     MapPrediction,
     MapDataResponse,
     RocDataResponse,
+    RocCurve,
+    RocModelResult,
+    RocComparisonResponse,
     ModelComparisonResponse,
     ModelComparisonResult,
 )
@@ -55,7 +58,13 @@ from api.prediction import (
     predict_by_zone_id,
     predict_all_zones,
 )
-from api.accuracy_service import evaluate_accuracy, evaluate_all_models, get_map_data
+from api.accuracy_service import (
+    evaluate_accuracy,
+    evaluate_all_models,
+    get_map_data,
+    compute_roc_data,
+    compute_roc_comparison,
+)
 from api.chicago_client import ChicagoAPIError
 
 logging.basicConfig(
@@ -476,8 +485,168 @@ async def get_accuracy_map_data(
         raise HTTPException(status_code=500, detail=f"Failed to get map data: {str(e)}")
 
 
+@app.get("/api/accuracy/roc", response_model=RocDataResponse, tags=["Accuracy"])
+async def get_accuracy_roc_data(
+    days: int | None = None,
+    max_crashes: int = 2000,
+    model: str | None = None,
+    start_date: str | None = None,
+    end_date: str | None = None,
+):
+    """Get ROC curve data computed from real crash data.
+
+    Evaluates the model on recent crashes and computes One-vs-Rest ROC curves.
+
+    Args:
+        days: Number of days back to fetch data (1, 7, 30, or 90)
+        max_crashes: Maximum number of crashes to evaluate
+        model: Model to evaluate (defaults to simplified_3class)
+        start_date: Start date (YYYY-MM-DD format, alternative to days)
+        end_date: End date (YYYY-MM-DD format, alternative to days)
+
+    Returns:
+        RocDataResponse with ROC curves for each class
+    """
+    from datetime import datetime as dt
+
+    # Calculate days from date range if provided
+    if start_date and end_date:
+        try:
+            start = dt.strptime(start_date, "%Y-%m-%d")
+            end = dt.strptime(end_date, "%Y-%m-%d")
+            days = max(1, (end - start).days)
+        except ValueError:
+            days = 7
+    elif days is None:
+        days = 7
+
+    # Validate days parameter
+    if days not in [1, 7, 30, 90]:
+        # Allow custom ranges from date params, otherwise default
+        if not (start_date and end_date):
+            days = 7
+
+    # Cap max_crashes
+    max_crashes = min(max(max_crashes, 100), 5000)
+
+    # Validate model parameter
+    if model is not None and model not in MODEL_REGISTRY:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown model: {model}. Available models: {list(MODEL_REGISTRY.keys())}",
+        )
+
+    # Skip regression model
+    if model is not None and MODEL_REGISTRY[model].model_type == "regression":
+        raise HTTPException(
+            status_code=400,
+            detail="Regression model is not supported for ROC evaluation",
+        )
+
+    try:
+        result = compute_roc_data(days=days, max_crashes=max_crashes, model_name=model)
+
+        return RocDataResponse(
+            model_name=result["model_name"],
+            model_type=result.get("model_type"),
+            curves=[RocCurve(**c) for c in result["curves"]],
+            computed_at=result["computed_at"],
+        )
+
+    except ChicagoAPIError as e:
+        logger.error(f"Chicago API error: {e}")
+        raise HTTPException(
+            status_code=503, detail=f"Failed to fetch data from Chicago API: {str(e)}"
+        )
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except Exception as e:
+        logger.exception("ROC computation error")
+        raise HTTPException(
+            status_code=500, detail=f"ROC computation failed: {str(e)}"
+        )
+
+
+@app.get(
+    "/api/accuracy/roc/compare", response_model=RocComparisonResponse, tags=["Accuracy"]
+)
+async def get_roc_comparison(
+    days: int | None = None,
+    max_crashes: int = 2000,
+    start_date: str | None = None,
+    end_date: str | None = None,
+):
+    """Compare ROC curves across all classification models.
+
+    Evaluates all classification models on the same dataset for fair comparison.
+
+    Args:
+        days: Number of days back to fetch data (1, 7, 30, or 90)
+        max_crashes: Maximum number of crashes per model
+        start_date: Start date (YYYY-MM-DD format, alternative to days)
+        end_date: End date (YYYY-MM-DD format, alternative to days)
+
+    Returns:
+        RocComparisonResponse with ROC data for each model
+    """
+    from datetime import datetime as dt
+
+    # Calculate days from date range if provided
+    if start_date and end_date:
+        try:
+            start = dt.strptime(start_date, "%Y-%m-%d")
+            end = dt.strptime(end_date, "%Y-%m-%d")
+            days = max(1, (end - start).days)
+        except ValueError:
+            days = 7
+    elif days is None:
+        days = 7
+
+    # Validate days parameter
+    if days not in [1, 7, 30, 90]:
+        # Allow custom ranges from date params, otherwise default
+        if not (start_date and end_date):
+            days = 7
+
+    # Cap max_crashes
+    max_crashes = min(max(max_crashes, 100), 5000)
+
+    try:
+        result = compute_roc_comparison(days=days, max_crashes=max_crashes)
+
+        # Convert to response models
+        models = {}
+        for model_name, model_result in result["models"].items():
+            models[model_name] = RocModelResult(
+                model_name=model_result["model_name"],
+                display_name=model_result["display_name"],
+                model_type=model_result["model_type"],
+                curves=[RocCurve(**c) for c in model_result["curves"]],
+                status=model_result["status"],
+                error=model_result.get("error"),
+            )
+
+        return RocComparisonResponse(
+            models=models,
+            time_range_days=result["time_range_days"],
+            max_crashes=result["max_crashes"],
+            computed_at=result["computed_at"],
+        )
+
+    except ChicagoAPIError as e:
+        logger.error(f"Chicago API error: {e}")
+        raise HTTPException(
+            status_code=503, detail=f"Failed to fetch data from Chicago API: {str(e)}"
+        )
+    except Exception as e:
+        logger.exception("ROC comparison error")
+        raise HTTPException(
+            status_code=500, detail=f"ROC comparison failed: {str(e)}"
+        )
+
+
 # ============================================================================
-# ROC Curve Data Endpoint
+# ROC Curve Data Endpoint (Pre-computed from Training)
 # ============================================================================
 
 

@@ -327,36 +327,17 @@ def prepare_features_for_nn(request: PredictionRequest, num_classes: int = 5) ->
         "DEVICE_CONDITION": request.device_condition,
         "ALIGNMENT": request.alignment,
         "ROAD_DEFECT": request.road_defect,
+        "PRIM_CONTRIBUTORY_CAUSE": request.prim_contributory_cause,
+        "DAMAGE": request.damage,
     }
 
     # Get label encoders from the neural network model's training data
-    # For neural networks, categorical features were label-encoded during training
-    # We need to use the same encoding
-    from api.config import (
-        FIRST_CRASH_TYPE_OPTIONS,
-        DAMAGE_OPTIONS,
-        WEATHER_CONDITION_OPTIONS,
-        LIGHTING_CONDITION_OPTIONS,
-        ROADWAY_SURFACE_COND_OPTIONS,
-        TRAFFIC_CONTROL_DEVICE_OPTIONS,
-        DEVICE_CONDITION_OPTIONS,
-        TRAFFICWAY_TYPE_OPTIONS,
-        ROAD_DEFECT_OPTIONS,
-        ALIGNMENT_OPTIONS,
-    )
-
-    # Create label encoders for categorical features
-    categorical_encoders = {
-        "WEATHER_CONDITION": WEATHER_CONDITION_OPTIONS,
-        "LIGHTING_CONDITION": LIGHTING_CONDITION_OPTIONS,
-        "FIRST_CRASH_TYPE": FIRST_CRASH_TYPE_OPTIONS,
-        "TRAFFICWAY_TYPE": TRAFFICWAY_TYPE_OPTIONS,
-        "ROADWAY_SURFACE_COND": ROADWAY_SURFACE_COND_OPTIONS,
-        "TRAFFIC_CONTROL_DEVICE": TRAFFIC_CONTROL_DEVICE_OPTIONS,
-        "DEVICE_CONDITION": DEVICE_CONDITION_OPTIONS,
-        "ALIGNMENT": ALIGNMENT_OPTIONS,
-        "ROAD_DEFECT": ROAD_DEFECT_OPTIONS,
-    }
+    # Load label encoders saved during training
+    import joblib
+    encoders_path = MODELS_DIR / "multiclass_nn" / "label_encoders.joblib"
+    label_encoders = {}
+    if encoders_path.exists():
+        label_encoders = joblib.load(encoders_path)
 
     # Build feature array
     features = []
@@ -364,12 +345,12 @@ def prepare_features_for_nn(request: PredictionRequest, num_classes: int = 5) ->
         if col in feature_mapping:
             value = feature_mapping[col]
 
-            # Apply label encoding for categorical features
-            if col in categorical_encoders:
-                options = categorical_encoders[col]
+            # Apply label encoding using saved encoders from training
+            if col in label_encoders:
+                le = label_encoders[col]
                 str_value = str(value)
-                if str_value in options:
-                    value = options.index(str_value)
+                if str_value in le.classes_:
+                    value = int(le.transform([str_value])[0])
                 else:
                     value = 0  # Default for unknown
 
@@ -378,6 +359,13 @@ def prepare_features_for_nn(request: PredictionRequest, num_classes: int = 5) ->
             # Feature not in mapping, use default value
             logger.warning(f"NN Feature {col} not in mapping, using 0")
             features.append(0.0)
+
+    # Load and apply the scaler (same as training)
+    scaler_path = MODELS_DIR / "multiclass_nn" / "scaler.joblib"
+    if scaler_path.exists():
+        scaler = joblib.load(scaler_path)
+        features_array = scaler.transform(np.array([features]))
+        return features_array.astype(np.float32)
 
     return np.array([features], dtype=np.float32)
 
