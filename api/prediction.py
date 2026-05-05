@@ -200,6 +200,39 @@ class ModelManager:
         """Check if a model is currently loaded."""
         return self._current_model is not None
 
+    def reload_model(self, model_name: str | None = None) -> Any:
+        """Force reload a model, clearing any cached version.
+
+        Args:
+            model_name: Name of the model to reload. If None, reloads current model.
+
+        Returns:
+            Freshly loaded model.
+        """
+        target = model_name or self._current_model
+        if target is None:
+            raise ValueError("No model specified and no current model loaded")
+
+        # Clear from cache
+        if target in self._models:
+            del self._models[target]
+            logger.info(f"Cleared cached model: {target}")
+
+        if target in self._label_encoders:
+            del self._label_encoders[target]
+
+        # Force fresh load
+        return self.load_model(target)
+
+    def clear_cache(self) -> None:
+        """Clear all cached models."""
+        self._models.clear()
+        self._label_encoders.clear()
+        self._current_model = None
+        self._zone_predictor = None
+        self._regression_predictor = None
+        logger.info("Cleared all model caches")
+
     def get_label_encoder(self, feature_name: str) -> LabelEncoder | None:
         """Get the label encoder for a categorical feature."""
         if self._current_model is None:
