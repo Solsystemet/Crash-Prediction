@@ -122,6 +122,22 @@ async def health_check():
     )
 
 
+@app.post("/api/reload-model", tags=["Model"])
+async def reload_model(model_name: str | None = None):
+    """Force reload the model from disk, clearing any cached version.
+
+    Use this after training a new model to ensure the API uses the latest version.
+    """
+    try:
+        model_manager.reload_model(model_name)
+        return {
+            "status": "success",
+            "message": f"Model '{model_manager.get_current_model_name()}' reloaded successfully",
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.post(
     "/api/predict",
     response_model=PredictionResponse
