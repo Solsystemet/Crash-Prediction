@@ -50,6 +50,12 @@ MODEL_REGISTRY: dict[str, ModelInfo] = {
         description="Predict expected number of crashes per day",
         model_type="regression",
     ),
+    "simple_rf": ModelInfo(
+        name="Simple Random Forest (Baseline)",
+        path=MODELS_DIR / "simple_rf",
+        description="Vanilla Random Forest with no feature engineering - baseline model",
+        model_type="simple",
+    ),
 }
 
 # Default model to use
@@ -58,6 +64,7 @@ DEFAULT_MODEL = "simplified_3class"
 # Model type to registry key mapping
 MODEL_TYPE_REGISTRY = {
     "simplified": "simplified_3class",
+    "simple": "simple_rf",
     "hierarchical": "hierarchical_5class",
     "zones": "simplified_zones",
     "regression": "regression_daily",

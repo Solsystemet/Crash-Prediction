@@ -27,6 +27,7 @@ from api.prediction import (
     predict,
     predict_hierarchical,
     predict_zones,
+    predict_simple,
     model_manager,
 )
 from api.models import PredictionRequest
@@ -732,6 +733,16 @@ def evaluate_accuracy(
                     "minor": response.probabilities.minor,
                     "severe": response.probabilities.severe,
                 }
+            elif model_type == "simple":
+                # Simple vanilla RF model
+                response = predict_simple(request, model_name)
+                predicted = response.prediction
+                confidence = response.confidence
+                probabilities = {
+                    "no_injury": response.probabilities.no_injury,
+                    "minor": response.probabilities.minor,
+                    "severe": response.probabilities.severe,
+                }
             else:
                 # Skip unsupported model types (e.g., regression)
                 continue
@@ -819,7 +830,7 @@ def evaluate_all_models(
     classification_models = [
         name
         for name, info in MODEL_REGISTRY.items()
-        if info.model_type in ("simplified", "hierarchical", "zones")
+        if info.model_type in ("simplified", "hierarchical", "zones", "simple")
     ]
 
     results = {}
@@ -946,7 +957,7 @@ def get_all_models_roc_data(
     classification_models = [
         name
         for name, info in MODEL_REGISTRY.items()
-        if info.model_type in ("simplified", "hierarchical", "zones")
+        if info.model_type in ("simplified", "hierarchical", "zones", "simple")
     ]
 
     results = {}

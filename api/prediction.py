@@ -10,6 +10,7 @@ import logging
 from pathlib import Path
 from typing import Any, Union
 
+import joblib
 import numpy as np
 from sklearn.preprocessing import LabelEncoder
 
@@ -109,6 +110,9 @@ class ModelManager:
             from training.regression.predict import CrashCountPredictor
             model = CrashCountPredictor(model_path)
             self._regression_predictor = model
+        elif model_info.model_type == "simple":
+            # Simple vanilla sklearn model (e.g., Random Forest baseline)
+            model = load_simple_rf_model(model_path)
         else:
             raise ValueError(f"Unknown model type: {model_info.model_type}")
 
@@ -118,6 +122,9 @@ class ModelManager:
         # Create label encoders for categorical features (for tree-based models)
         if model_info.model_type in ["simplified", "hierarchical", "zones"]:
             self._create_label_encoders(model_name)
+        elif model_info.model_type == "simple":
+            # Simple model has its own encoders saved during training
+            self._label_encoders[model_name] = model.get("encoders", {})
 
         logger.info(f"Model loaded successfully: {model_name}")
         return model
@@ -914,3 +921,134 @@ def predict_all_zones(request) -> list[ZonePredictionResponse]:
             # Skip zones that fail
 
     return predictions
+
+
+def load_simple_rf_model(model_path: Path) -> dict:
+    """Load a simple Random Forest model from disk.
+
+    Args:
+        model_path: Path to the model directory.
+
+    Returns:
+        Dictionary with model, encoders, and feature names.
+    """
+    model_path = Path(model_path)
+
+    model = joblib.load(model_path / "model.joblib")
+    encoders = joblib.load(model_path / "encoders.joblib")
+    feature_names = joblib.load(model_path / "feature_names.joblib")
+
+    return {
+        "model": model,
+        "encoders": encoders,
+        "feature_names": feature_names,
+    }
+
+
+def prepare_features_for_simple_model(
+    request: PredictionRequest,
+    model_data: dict,
+) -> np.ndarray:
+    """Convert API request to feature array for simple RF model.
+
+    Args:
+        request: PredictionRequest with input features.
+        model_data: Dictionary with model, encoders, and feature names.
+
+    Returns:
+        NumPy array of features ready for prediction.
+    """
+    encoders = model_data["encoders"]
+    feature_names = model_data["feature_names"]
+
+    # Map request fields to feature names
+    feature_mapping = {
+        "FIRST_CRASH_TYPE": request.first_crash_type,
+        "DAMAGE": request.damage,
+        "PRIM_CONTRIBUTORY_CAUSE": request.prim_contributory_cause,
+        "TRAFFIC_CONTROL_DEVICE": request.traffic_control_device,
+        "DEVICE_CONDITION": request.device_condition,
+        "WEATHER_CONDITION": request.weather_condition,
+        "LIGHTING_CONDITION": request.lighting_condition,
+        "TRAFFICWAY_TYPE": request.trafficway_type,
+        "ROADWAY_SURFACE_COND": request.roadway_surface_cond,
+        "ROAD_DEFECT": request.road_defect,
+        "ALIGNMENT": request.alignment,
+        "POSTED_SPEED_LIMIT": request.posted_speed_limit,
+        "NUM_UNITS": request.vehicle_count,
+        "CRASH_HOUR": request.crash_hour,
+        "CRASH_DAY_OF_WEEK": request.crash_day_of_week,
+        "CRASH_MONTH": request.crash_month,
+    }
+
+    features = []
+    for col in feature_names:
+        if col in feature_mapping:
+            value = feature_mapping[col]
+
+            # Apply label encoding for categorical features
+            if col in encoders and col != "target":
+                encoder = encoders[col]
+                try:
+                    value = encoder.transform([str(value)])[0]
+                except ValueError:
+                    # Unknown value - try UNKNOWN
+                    try:
+                        value = encoder.transform(["UNKNOWN"])[0]
+                    except ValueError:
+                        # Fall back to 0
+                        value = 0
+
+            features.append(float(value) if not isinstance(value, (int, float)) else value)
+        else:
+            # Feature not in mapping, use default value
+            features.append(0)
+
+    return np.array([features])
+
+
+def predict_simple(
+    request: PredictionRequest, model_name: str = "simple_rf"
+) -> PredictionResponse:
+    """Make a prediction using the simple Random Forest model.
+
+    Args:
+        request: PredictionRequest with input features.
+        model_name: Name of the simple model to use.
+
+    Returns:
+        PredictionResponse with prediction and probabilities.
+    """
+    # Ensure model is loaded
+    model_data = model_manager.load_model(model_name)
+
+    # Prepare features
+    features = prepare_features_for_simple_model(request, model_data)
+
+    # Get predictions
+    model = model_data["model"]
+    prediction_idx = model.predict(features)[0]
+    probabilities = model.predict_proba(features)[0]
+
+    # Class names
+    class_names = ["NO_INJURY", "MINOR", "SEVERE"]
+    prediction_label = class_names[prediction_idx]
+
+    # Get probabilities in order
+    prob_no_injury = probabilities[0]
+    prob_minor = probabilities[1]
+    prob_severe = probabilities[2]
+
+    # Confidence is the max probability
+    confidence = max(probabilities)
+
+    return PredictionResponse(
+        prediction=prediction_label,  # type: ignore
+        probabilities=PredictionProbabilities(
+            no_injury=float(prob_no_injury),
+            minor=float(prob_minor),
+            severe=float(prob_severe),
+        ),
+        confidence=float(confidence),
+        model_name=model_name,
+    )
