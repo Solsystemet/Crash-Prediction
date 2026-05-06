@@ -56,6 +56,36 @@ MODEL_REGISTRY: dict[str, ModelInfo] = {
         description="Vanilla Random Forest with no feature engineering - baseline model",
         model_type="simple",
     ),
+    "tuned_lgbm": ModelInfo(
+        name="LightGBM (Tuned)",
+        path=MODELS_DIR / "tuned_boosting" / "lgbm",
+        description="Hyperparameter-tuned LightGBM with Optuna",
+        model_type="tuned",
+    ),
+    "tuned_xgb": ModelInfo(
+        name="XGBoost (Tuned)",
+        path=MODELS_DIR / "tuned_boosting" / "xgb",
+        description="Hyperparameter-tuned XGBoost with Optuna",
+        model_type="tuned",
+    ),
+    "tuned_catboost": ModelInfo(
+        name="CatBoost (Tuned)",
+        path=MODELS_DIR / "tuned_boosting" / "catboost",
+        description="Hyperparameter-tuned CatBoost with Optuna",
+        model_type="tuned",
+    ),
+    "tabnet": ModelInfo(
+        name="TabNet",
+        path=MODELS_DIR / "tabnet",
+        description="Attention-based deep learning for tabular data",
+        model_type="deep",
+    ),
+    "stacking_ensemble": ModelInfo(
+        name="Stacking Ensemble",
+        path=MODELS_DIR / "stacking_ensemble",
+        description="Stacking ensemble combining RF, LightGBM, XGBoost, CatBoost",
+        model_type="ensemble",
+    ),
 }
 
 # Default model to use
