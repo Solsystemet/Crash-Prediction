@@ -11,3 +11,7 @@ Download the following datasets and place them in the `data/` directory with the
 | Traffic Crashes - People | [Traffic Crashes - People](https://data.cityofchicago.org/Transportation/Traffic-Crashes-People/u6pd-qa9d/about_data) | `traffic-crashes-people.csv` |
 | Traffic Crashes - Vehicles | [Traffic Crashes - Vehicles](https://data.cityofchicago.org/Transportation/Traffic-Crashes-Vehicles/68nd-jvt3/about_data) | `traffic_crashes_vehicles.csv` |
 | Chicago Traffic Tracker | [Chicago Traffic Tracker - Historical Congestion Estimates](https://data.cityofchicago.org/Transportation/Chicago-Traffic-Tracker-Historical-Congestion-Esti/4g9f-3jbs/about_data) | `chicago_traffic_tracker_historical_congestion_estimates_by_segment_2024_current.csv` |
+
+## Chicago Data Portal API Environment Variables
+
+The api used by the frontend uses the Chicago Data Portal API. To get the api visit the [Chicago Data Portal](https://data.cityofchicago.org/profile/edit/developer_settings). Then use the keys in a `.env` file, use the `.env.examples` for the variable names.
