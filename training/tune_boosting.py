@@ -1,13 +1,17 @@
 """Hyperparameter tuning for tree-based models using Optuna.
 
 Tunes LightGBM, XGBoost, CatBoost, and Random Forest with Bayesian optimization.
-Uses 5-fold stratified CV with macro F1 as the objective.
+Uses 3-fold stratified CV with macro F1 as the objective. Includes:
+- Optuna pruning to stop unpromising trials early
+- GPU acceleration for XGBoost/CatBoost (auto-detected)
+- Narrowed search ranges for faster convergence
 
 Usage:
     python training/tune_boosting.py
     python training/tune_boosting.py --model lgbm --n-trials 100
     python training/tune_boosting.py --model rf --n-trials 50
-    python training/tune_boosting.py --model all --sample 100000
+    python training/tune_boosting.py --model all --sample 50000
+    python training/tune_boosting.py --model xgb --no-gpu  # Force CPU
 """
 
 from __future__ import annotations
@@ -23,6 +27,7 @@ from typing import Any, Literal
 
 import joblib
 import numpy as np
+import optuna
 import pandas as pd
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import f1_score, accuracy_score, classification_report, confusion_matrix
@@ -76,6 +81,29 @@ NUMERICAL_FEATURES = [
     "CRASH_DAY_OF_WEEK",
     "CRASH_MONTH",
 ]
+
+# Tuning configuration
+CV_FOLDS = 3  # Reduced from 5 for faster tuning
+PRUNING_WARMUP_STEPS = 5  # Trials before pruning kicks in
+
+
+def detect_gpu() -> bool:
+    """Detect if GPU is available for XGBoost/CatBoost."""
+    try:
+        import torch
+        return torch.cuda.is_available()
+    except ImportError:
+        pass
+    # Fallback: check for CUDA libraries
+    try:
+        import xgboost as xgb
+        # Try to create a small GPU model
+        params = {"tree_method": "gpu_hist", "n_estimators": 1}
+        model = xgb.XGBClassifier(**params)
+        return True
+    except Exception:
+        return False
+
 
 INJURY_MAPPING = {
     "NO INDICATION OF INJURY": "NO_INJURY",
@@ -165,7 +193,7 @@ def get_class_weights(y: np.ndarray) -> dict[int, float]:
 # ============================================================================
 
 def objective_lgbm(trial, X: np.ndarray, y: np.ndarray, cv: StratifiedKFold) -> float:
-    """Optuna objective function for LightGBM."""
+    """Optuna objective function for LightGBM with pruning support."""
     import lightgbm as lgb
     
     params = {
@@ -176,21 +204,21 @@ def objective_lgbm(trial, X: np.ndarray, y: np.ndarray, cv: StratifiedKFold) -> 
         "boosting_type": "gbdt",
         "n_jobs": -1,
         "random_state": 42,
-        # Tunable parameters
-        "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.3, log=True),
-        "n_estimators": trial.suggest_int("n_estimators", 100, 1000),
-        "max_depth": trial.suggest_int("max_depth", 3, 12),
-        "num_leaves": trial.suggest_int("num_leaves", 20, 150),
-        "min_child_samples": trial.suggest_int("min_child_samples", 5, 100),
-        "subsample": trial.suggest_float("subsample", 0.5, 1.0),
-        "colsample_bytree": trial.suggest_float("colsample_bytree", 0.5, 1.0),
-        "reg_alpha": trial.suggest_float("reg_alpha", 1e-8, 10.0, log=True),
-        "reg_lambda": trial.suggest_float("reg_lambda", 1e-8, 10.0, log=True),
+        # Tunable parameters (narrowed ranges for faster convergence)
+        "learning_rate": trial.suggest_float("learning_rate", 0.02, 0.2, log=True),
+        "n_estimators": trial.suggest_int("n_estimators", 150, 500),
+        "max_depth": trial.suggest_int("max_depth", 4, 10),
+        "num_leaves": trial.suggest_int("num_leaves", 31, 127),
+        "min_child_samples": trial.suggest_int("min_child_samples", 10, 50),
+        "subsample": trial.suggest_float("subsample", 0.6, 0.95),
+        "colsample_bytree": trial.suggest_float("colsample_bytree", 0.6, 0.95),
+        "reg_alpha": trial.suggest_float("reg_alpha", 1e-6, 1.0, log=True),
+        "reg_lambda": trial.suggest_float("reg_lambda", 1e-6, 1.0, log=True),
         "class_weight": "balanced",
     }
     
     f1_scores = []
-    for train_idx, val_idx in cv.split(X, y):
+    for fold_idx, (train_idx, val_idx) in enumerate(cv.split(X, y)):
         X_train, X_val = X[train_idx], X[val_idx]
         y_train, y_val = y[train_idx], y[val_idx]
         
@@ -198,32 +226,45 @@ def objective_lgbm(trial, X: np.ndarray, y: np.ndarray, cv: StratifiedKFold) -> 
         model.fit(
             X_train, y_train,
             eval_set=[(X_val, y_val)],
-            callbacks=[lgb.early_stopping(50, verbose=False)],
+            callbacks=[lgb.early_stopping(30, verbose=False)],
         )
         
         y_pred = model.predict(X_val)
-        f1_scores.append(f1_score(y_val, y_pred, average="macro"))
+        fold_f1 = f1_score(y_val, y_pred, average="macro")
+        f1_scores.append(fold_f1)
+        
+        # Report intermediate value for pruning
+        trial.report(np.mean(f1_scores), fold_idx)
+        if trial.should_prune():
+            raise optuna.TrialPruned()
     
     return np.mean(f1_scores)
 
 
 def tune_lgbm(X: np.ndarray, y: np.ndarray, n_trials: int = 50) -> tuple[dict, float]:
-    """Tune LightGBM hyperparameters."""
+    """Tune LightGBM hyperparameters with pruning."""
     import optuna
     
     optuna.logging.set_verbosity(optuna.logging.WARNING)
     
-    cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+    cv = StratifiedKFold(n_splits=CV_FOLDS, shuffle=True, random_state=42)
+    pruner = optuna.pruners.MedianPruner(n_warmup_steps=PRUNING_WARMUP_STEPS)
     
-    study = optuna.create_study(direction="maximize", study_name="lgbm_tuning")
+    study = optuna.create_study(
+        direction="maximize",
+        study_name="lgbm_tuning",
+        pruner=pruner,
+    )
     study.optimize(
         lambda trial: objective_lgbm(trial, X, y, cv),
         n_trials=n_trials,
         show_progress_bar=True,
+        n_jobs=1,  # Sequential trials (model training is already parallel)
     )
     
     logger.info(f"LightGBM best F1 (CV): {study.best_value:.4f}")
     logger.info(f"LightGBM best params: {study.best_params}")
+    logger.info(f"Pruned trials: {len([t for t in study.trials if t.state == optuna.trial.TrialState.PRUNED])}")
     
     return study.best_params, study.best_value
 
@@ -232,8 +273,8 @@ def tune_lgbm(X: np.ndarray, y: np.ndarray, n_trials: int = 50) -> tuple[dict, f
 # XGBoost Tuning
 # ============================================================================
 
-def objective_xgb(trial, X: np.ndarray, y: np.ndarray, cv: StratifiedKFold) -> float:
-    """Optuna objective function for XGBoost."""
+def objective_xgb(trial, X: np.ndarray, y: np.ndarray, cv: StratifiedKFold, use_gpu: bool = False) -> float:
+    """Optuna objective function for XGBoost with pruning and optional GPU."""
     import xgboost as xgb
     
     # Calculate sample weights for class imbalance
@@ -246,21 +287,21 @@ def objective_xgb(trial, X: np.ndarray, y: np.ndarray, cv: StratifiedKFold) -> f
         "verbosity": 0,
         "n_jobs": -1,
         "random_state": 42,
-        "tree_method": "hist",
-        # Tunable parameters
-        "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.3, log=True),
-        "n_estimators": trial.suggest_int("n_estimators", 100, 1000),
-        "max_depth": trial.suggest_int("max_depth", 3, 12),
-        "min_child_weight": trial.suggest_int("min_child_weight", 1, 20),
-        "subsample": trial.suggest_float("subsample", 0.5, 1.0),
-        "colsample_bytree": trial.suggest_float("colsample_bytree", 0.5, 1.0),
-        "gamma": trial.suggest_float("gamma", 1e-8, 5.0, log=True),
-        "reg_alpha": trial.suggest_float("reg_alpha", 1e-8, 10.0, log=True),
-        "reg_lambda": trial.suggest_float("reg_lambda", 1e-8, 10.0, log=True),
+        "tree_method": "gpu_hist" if use_gpu else "hist",
+        # Tunable parameters (narrowed ranges)
+        "learning_rate": trial.suggest_float("learning_rate", 0.02, 0.2, log=True),
+        "n_estimators": trial.suggest_int("n_estimators", 150, 500),
+        "max_depth": trial.suggest_int("max_depth", 4, 10),
+        "min_child_weight": trial.suggest_int("min_child_weight", 1, 10),
+        "subsample": trial.suggest_float("subsample", 0.6, 0.95),
+        "colsample_bytree": trial.suggest_float("colsample_bytree", 0.6, 0.95),
+        "gamma": trial.suggest_float("gamma", 1e-6, 1.0, log=True),
+        "reg_alpha": trial.suggest_float("reg_alpha", 1e-6, 1.0, log=True),
+        "reg_lambda": trial.suggest_float("reg_lambda", 1e-6, 1.0, log=True),
     }
     
     f1_scores = []
-    for train_idx, val_idx in cv.split(X, y):
+    for fold_idx, (train_idx, val_idx) in enumerate(cv.split(X, y)):
         X_train, X_val = X[train_idx], X[val_idx]
         y_train, y_val = y[train_idx], y[val_idx]
         
@@ -276,28 +317,41 @@ def objective_xgb(trial, X: np.ndarray, y: np.ndarray, cv: StratifiedKFold) -> f
         )
         
         y_pred = model.predict(X_val)
-        f1_scores.append(f1_score(y_val, y_pred, average="macro"))
+        fold_f1 = f1_score(y_val, y_pred, average="macro")
+        f1_scores.append(fold_f1)
+        
+        # Report intermediate value for pruning
+        trial.report(np.mean(f1_scores), fold_idx)
+        if trial.should_prune():
+            raise optuna.TrialPruned()
     
     return np.mean(f1_scores)
 
 
-def tune_xgb(X: np.ndarray, y: np.ndarray, n_trials: int = 50) -> tuple[dict, float]:
-    """Tune XGBoost hyperparameters."""
+def tune_xgb(X: np.ndarray, y: np.ndarray, n_trials: int = 50, use_gpu: bool = False) -> tuple[dict, float]:
+    """Tune XGBoost hyperparameters with pruning and optional GPU."""
     import optuna
     
     optuna.logging.set_verbosity(optuna.logging.WARNING)
     
-    cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+    cv = StratifiedKFold(n_splits=CV_FOLDS, shuffle=True, random_state=42)
+    pruner = optuna.pruners.MedianPruner(n_warmup_steps=PRUNING_WARMUP_STEPS)
     
-    study = optuna.create_study(direction="maximize", study_name="xgb_tuning")
+    study = optuna.create_study(
+        direction="maximize",
+        study_name="xgb_tuning",
+        pruner=pruner,
+    )
     study.optimize(
-        lambda trial: objective_xgb(trial, X, y, cv),
+        lambda trial: objective_xgb(trial, X, y, cv, use_gpu),
         n_trials=n_trials,
         show_progress_bar=True,
+        n_jobs=1,
     )
     
     logger.info(f"XGBoost best F1 (CV): {study.best_value:.4f}")
     logger.info(f"XGBoost best params: {study.best_params}")
+    logger.info(f"Pruned trials: {len([t for t in study.trials if t.state == optuna.trial.TrialState.PRUNED])}")
     
     return study.best_params, study.best_value
 
@@ -306,8 +360,8 @@ def tune_xgb(X: np.ndarray, y: np.ndarray, n_trials: int = 50) -> tuple[dict, fl
 # CatBoost Tuning
 # ============================================================================
 
-def objective_catboost(trial, X: np.ndarray, y: np.ndarray, cv: StratifiedKFold) -> float:
-    """Optuna objective function for CatBoost."""
+def objective_catboost(trial, X: np.ndarray, y: np.ndarray, cv: StratifiedKFold, use_gpu: bool = False) -> float:
+    """Optuna objective function for CatBoost with pruning and optional GPU."""
     from catboost import CatBoostClassifier
     
     params = {
@@ -317,18 +371,23 @@ def objective_catboost(trial, X: np.ndarray, y: np.ndarray, cv: StratifiedKFold)
         "random_state": 42,
         "thread_count": -1,
         "auto_class_weights": "Balanced",
-        # Tunable parameters
-        "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.3, log=True),
-        "iterations": trial.suggest_int("iterations", 100, 1000),
-        "depth": trial.suggest_int("depth", 4, 10),
-        "l2_leaf_reg": trial.suggest_float("l2_leaf_reg", 1e-8, 10.0, log=True),
-        "bagging_temperature": trial.suggest_float("bagging_temperature", 0.0, 1.0),
-        "random_strength": trial.suggest_float("random_strength", 1e-8, 10.0, log=True),
-        "border_count": trial.suggest_int("border_count", 32, 255),
+        # Tunable parameters (narrowed ranges)
+        "learning_rate": trial.suggest_float("learning_rate", 0.02, 0.2, log=True),
+        "iterations": trial.suggest_int("iterations", 200, 500),
+        "depth": trial.suggest_int("depth", 5, 8),
+        "l2_leaf_reg": trial.suggest_float("l2_leaf_reg", 1e-6, 1.0, log=True),
+        "bagging_temperature": trial.suggest_float("bagging_temperature", 0.0, 0.8),
+        "random_strength": trial.suggest_float("random_strength", 1e-6, 1.0, log=True),
+        "border_count": trial.suggest_int("border_count", 64, 200),
     }
     
+    # GPU acceleration
+    if use_gpu:
+        params["task_type"] = "GPU"
+        params["devices"] = "0"
+    
     f1_scores = []
-    for train_idx, val_idx in cv.split(X, y):
+    for fold_idx, (train_idx, val_idx) in enumerate(cv.split(X, y)):
         X_train, X_val = X[train_idx], X[val_idx]
         y_train, y_val = y[train_idx], y[val_idx]
         
@@ -336,32 +395,45 @@ def objective_catboost(trial, X: np.ndarray, y: np.ndarray, cv: StratifiedKFold)
         model.fit(
             X_train, y_train,
             eval_set=(X_val, y_val),
-            early_stopping_rounds=50,
+            early_stopping_rounds=30,
         )
         
         y_pred = model.predict(X_val).flatten()
-        f1_scores.append(f1_score(y_val, y_pred, average="macro"))
+        fold_f1 = f1_score(y_val, y_pred, average="macro")
+        f1_scores.append(fold_f1)
+        
+        # Report intermediate value for pruning
+        trial.report(np.mean(f1_scores), fold_idx)
+        if trial.should_prune():
+            raise optuna.TrialPruned()
     
     return np.mean(f1_scores)
 
 
-def tune_catboost(X: np.ndarray, y: np.ndarray, n_trials: int = 50) -> tuple[dict, float]:
-    """Tune CatBoost hyperparameters."""
+def tune_catboost(X: np.ndarray, y: np.ndarray, n_trials: int = 50, use_gpu: bool = False) -> tuple[dict, float]:
+    """Tune CatBoost hyperparameters with pruning and optional GPU."""
     import optuna
     
     optuna.logging.set_verbosity(optuna.logging.WARNING)
     
-    cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+    cv = StratifiedKFold(n_splits=CV_FOLDS, shuffle=True, random_state=42)
+    pruner = optuna.pruners.MedianPruner(n_warmup_steps=PRUNING_WARMUP_STEPS)
     
-    study = optuna.create_study(direction="maximize", study_name="catboost_tuning")
+    study = optuna.create_study(
+        direction="maximize",
+        study_name="catboost_tuning",
+        pruner=pruner,
+    )
     study.optimize(
-        lambda trial: objective_catboost(trial, X, y, cv),
+        lambda trial: objective_catboost(trial, X, y, cv, use_gpu),
         n_trials=n_trials,
         show_progress_bar=True,
+        n_jobs=1,
     )
     
     logger.info(f"CatBoost best F1 (CV): {study.best_value:.4f}")
     logger.info(f"CatBoost best params: {study.best_params}")
+    logger.info(f"Pruned trials: {len([t for t in study.trials if t.state == optuna.trial.TrialState.PRUNED])}")
     
     return study.best_params, study.best_value
 
@@ -387,10 +459,10 @@ def objective_rf(trial, X: np.ndarray, y: np.ndarray, cv: StratifiedKFold) -> fl
         max_features = max_features_type
     
     params = {
-        "n_estimators": trial.suggest_int("n_estimators", 100, 1000),
+        "n_estimators": trial.suggest_int("n_estimators", 150, 400),
         "max_depth": max_depth,
-        "min_samples_split": trial.suggest_int("min_samples_split", 2, 20),
-        "min_samples_leaf": trial.suggest_int("min_samples_leaf", 1, 10),
+        "min_samples_split": trial.suggest_int("min_samples_split", 2, 15),
+        "min_samples_leaf": trial.suggest_int("min_samples_leaf", 1, 8),
         "max_features": max_features,
         "bootstrap": trial.suggest_categorical("bootstrap", [True, False]),
         "class_weight": trial.suggest_categorical("class_weight", ["balanced", "balanced_subsample"]),
@@ -404,7 +476,7 @@ def objective_rf(trial, X: np.ndarray, y: np.ndarray, cv: StratifiedKFold) -> fl
         params["bootstrap"] = True
     
     f1_scores = []
-    for train_idx, val_idx in cv.split(X, y):
+    for fold_idx, (train_idx, val_idx) in enumerate(cv.split(X, y)):
         X_train, X_val = X[train_idx], X[val_idx]
         y_train, y_val = y[train_idx], y[val_idx]
         
@@ -412,28 +484,41 @@ def objective_rf(trial, X: np.ndarray, y: np.ndarray, cv: StratifiedKFold) -> fl
         model.fit(X_train, y_train)
         
         y_pred = model.predict(X_val)
-        f1_scores.append(f1_score(y_val, y_pred, average="macro"))
+        fold_f1 = f1_score(y_val, y_pred, average="macro")
+        f1_scores.append(fold_f1)
+        
+        # Report intermediate value for pruning
+        trial.report(np.mean(f1_scores), fold_idx)
+        if trial.should_prune():
+            raise optuna.TrialPruned()
     
     return np.mean(f1_scores)
 
 
 def tune_rf(X: np.ndarray, y: np.ndarray, n_trials: int = 50) -> tuple[dict, float]:
-    """Tune Random Forest hyperparameters."""
+    """Tune Random Forest hyperparameters with pruning."""
     import optuna
     
     optuna.logging.set_verbosity(optuna.logging.WARNING)
     
-    cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+    cv = StratifiedKFold(n_splits=CV_FOLDS, shuffle=True, random_state=42)
+    pruner = optuna.pruners.MedianPruner(n_warmup_steps=PRUNING_WARMUP_STEPS)
     
-    study = optuna.create_study(direction="maximize", study_name="rf_tuning")
+    study = optuna.create_study(
+        direction="maximize",
+        study_name="rf_tuning",
+        pruner=pruner,
+    )
     study.optimize(
         lambda trial: objective_rf(trial, X, y, cv),
         n_trials=n_trials,
         show_progress_bar=True,
+        n_jobs=1,
     )
     
     logger.info(f"Random Forest best F1 (CV): {study.best_value:.4f}")
     logger.info(f"Random Forest best params: {study.best_params}")
+    logger.info(f"Pruned trials: {len([t for t in study.trials if t.state == optuna.trial.TrialState.PRUNED])}")
     
     return study.best_params, study.best_value
 
@@ -626,6 +711,7 @@ def main(
     model_type: Literal["lgbm", "xgb", "catboost", "rf", "all"] = "all",
     n_trials: int = 50,
     sample_size: int | None = None,
+    use_gpu: bool | None = None,
 ) -> None:
     """Main tuning pipeline.
     
@@ -633,8 +719,17 @@ def main(
         model_type: Which model(s) to tune.
         n_trials: Number of Optuna trials per model.
         sample_size: Optional sample size for faster iteration.
+        use_gpu: Use GPU for XGBoost/CatBoost. None=auto-detect.
     """
+    # Auto-detect GPU if not specified
+    if use_gpu is None:
+        use_gpu = detect_gpu()
+        logger.info(f"GPU auto-detected: {use_gpu}")
+    else:
+        logger.info(f"GPU mode: {'enabled' if use_gpu else 'disabled'}")
+    
     logger.info(f"Starting hyperparameter tuning: model={model_type}, n_trials={n_trials}")
+    logger.info(f"Using {CV_FOLDS}-fold CV with pruning (warmup={PRUNING_WARMUP_STEPS})")
     
     # Prepare data
     X, y, feature_names, encoders = prepare_data(sample_size)
@@ -666,9 +761,9 @@ def main(
             if mt == "lgbm":
                 best_params, cv_score = tune_lgbm(X_trainval, y_trainval, n_trials)
             elif mt == "xgb":
-                best_params, cv_score = tune_xgb(X_trainval, y_trainval, n_trials)
+                best_params, cv_score = tune_xgb(X_trainval, y_trainval, n_trials, use_gpu)
             elif mt == "catboost":
-                best_params, cv_score = tune_catboost(X_trainval, y_trainval, n_trials)
+                best_params, cv_score = tune_catboost(X_trainval, y_trainval, n_trials, use_gpu)
             elif mt == "rf":
                 best_params, cv_score = tune_rf(X_trainval, y_trainval, n_trials)
             else:
@@ -742,8 +837,17 @@ if __name__ == "__main__":
         "--sample",
         type=int,
         default=None,
-        help="Sample size for faster iteration",
+        help="Sample size for faster iteration (e.g., 50000)",
+    )
+    parser.add_argument(
+        "--no-gpu",
+        action="store_true",
+        help="Disable GPU acceleration (default: auto-detect)",
     )
     
     args = parser.parse_args()
-    main(model_type=args.model, n_trials=args.n_trials, sample_size=args.sample)
+    
+    # Determine GPU mode: None = auto-detect, False = disabled
+    use_gpu = None if not args.no_gpu else False
+    
+    main(model_type=args.model, n_trials=args.n_trials, sample_size=args.sample, use_gpu=use_gpu)

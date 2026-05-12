@@ -74,17 +74,17 @@ MODEL_REGISTRY: dict[str, ModelInfo] = {
         description="Hyperparameter-tuned CatBoost with Optuna",
         model_type="tuned",
     ),
+    "tuned_rf": ModelInfo(
+        name="Random Forest (Tuned)",
+        path=MODELS_DIR / "tuned_boosting" / "rf",
+        description="Hyperparameter-tuned Random Forest with Optuna",
+        model_type="tuned",
+    ),
     "tabnet": ModelInfo(
         name="TabNet",
         path=MODELS_DIR / "tabnet",
         description="Attention-based deep learning for tabular data",
         model_type="deep",
-    ),
-    "stacking_ensemble": ModelInfo(
-        name="Stacking Ensemble",
-        path=MODELS_DIR / "stacking_ensemble",
-        description="Stacking ensemble combining RF, LightGBM, XGBoost, CatBoost",
-        model_type="ensemble",
     ),
 }
 

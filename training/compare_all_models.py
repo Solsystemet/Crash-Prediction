@@ -35,7 +35,6 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from data_preparation.helpers.csv_loaders import get_traffic_crashes
-from training.ensemble.stacking import StackingEnsemble  # Required for unpickling
 from training.baselines import (
     create_imbalance_baselines,
     print_dual_baseline_comparison,
@@ -216,11 +215,6 @@ def find_all_models() -> list[tuple[str, Path]]:
     tabnet_dir = MODELS_DIR / "tabnet"
     if (tabnet_dir / "model.joblib").exists():
         models.append(("TabNet", tabnet_dir))
-    
-    # Stacking ensemble
-    ensemble_dir = MODELS_DIR / "stacking_ensemble"
-    if (ensemble_dir / "model.joblib").exists():
-        models.append(("Stacking Ensemble", ensemble_dir))
     
     return models
 

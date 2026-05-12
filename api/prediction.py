@@ -34,7 +34,6 @@ from training.hierarchical.tree_classifier import (
     load_hierarchical_model,
 )
 from training.hierarchical.simplified_targets import SIMPLIFIED_CLASS_NAMES
-from training.ensemble.stacking import StackingEnsemble  # Required for joblib deserialization
 
 logger = logging.getLogger(__name__)
 
@@ -111,8 +110,8 @@ class ModelManager:
             from training.regression.predict import CrashCountPredictor
             model = CrashCountPredictor(model_path)
             self._regression_predictor = model
-        elif model_info.model_type in ("simple", "tuned", "deep", "ensemble"):
-            # Simple/tuned/deep/ensemble models all use same joblib format
+        elif model_info.model_type in ("simple", "tuned", "deep"):
+            # Simple/tuned/deep models all use same joblib format
             model = load_simple_rf_model(model_path)
         else:
             raise ValueError(f"Unknown model type: {model_info.model_type}")
@@ -123,7 +122,7 @@ class ModelManager:
         # Create label encoders for categorical features (for tree-based models)
         if model_info.model_type in ["simplified", "hierarchical", "zones"]:
             self._create_label_encoders(model_name)
-        elif model_info.model_type in ("simple", "tuned", "deep", "ensemble"):
+        elif model_info.model_type in ("simple", "tuned", "deep"):
             # These models have their own encoders saved during training
             self._label_encoders[model_name] = model.get("encoders", {})
 
@@ -1028,8 +1027,18 @@ def predict_simple(
 
     # Get predictions
     model = model_data["model"]
-    prediction_idx = model.predict(features)[0]
-    probabilities = model.predict_proba(features)[0]
+    prediction = model.predict(features)
+    # Handle CatBoost and other models that return 2D arrays or float indices
+    if hasattr(prediction, "flatten"):
+        prediction = prediction.flatten()
+    prediction_idx = int(prediction[0])
+    
+    probabilities = model.predict_proba(features)
+    # Handle 2D probability arrays
+    if probabilities.ndim > 1:
+        probabilities = probabilities[0]
+    else:
+        probabilities = probabilities.flatten()
 
     # Class names
     class_names = ["NO_INJURY", "MINOR", "SEVERE"]

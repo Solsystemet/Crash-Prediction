@@ -293,8 +293,8 @@ def compute_roc_curves(
     curves = []
     colors = ["#3b82f6", "#f97316", "#22c55e", "#ef4444"]  # blue, orange, green, red
 
-    # For 3-class models (simplified, zones, simple, tuned, deep, ensemble)
-    if model_type in ("simplified", "zones", "simple", "tuned", "deep", "ensemble"):
+    # For 3-class models (simplified, zones, simple, tuned, deep)
+    if model_type in ("simplified", "zones", "simple", "tuned", "deep"):
         # L1: Injury (MINOR or SEVERE) vs No Injury
         # P(injury) = P(minor) + P(severe) = 1 - P(no_injury)
         l1_y_true = []
@@ -733,8 +733,8 @@ def evaluate_accuracy(
                     "minor": response.probabilities.minor,
                     "severe": response.probabilities.severe,
                 }
-            elif model_type in ("simple", "tuned", "deep", "ensemble"):
-                # Simple/tuned/deep/ensemble models all use same prediction interface
+            elif model_type in ("simple", "tuned", "deep"):
+                # Simple/tuned/deep models all use same prediction interface
                 response = predict_simple(request, model_name)
                 predicted = response.prediction
                 confidence = response.confidence
@@ -830,7 +830,7 @@ def evaluate_all_models(
     classification_models = [
         name
         for name, info in MODEL_REGISTRY.items()
-        if info.model_type in ("simplified", "zones", "simple", "tuned", "deep", "ensemble")
+        if info.model_type in ("simplified", "zones", "simple", "tuned", "deep")
     ]
 
     results = {}
@@ -957,7 +957,7 @@ def get_all_models_roc_data(
     classification_models = [
         name
         for name, info in MODEL_REGISTRY.items()
-        if info.model_type in ("simplified", "zones", "simple", "tuned", "deep", "ensemble")
+        if info.model_type in ("simplified", "zones", "simple", "tuned", "deep")
     ]
 
     results = {}
