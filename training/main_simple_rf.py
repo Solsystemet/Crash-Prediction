@@ -43,6 +43,10 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from data_preparation.helpers.csv_loaders import get_traffic_crashes
+from training.baselines import (
+    create_imbalance_baselines,
+    print_dual_baseline_comparison,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -331,6 +335,23 @@ def main(sample_size: int | None = None, random_state: int = 42) -> None:
     
     # Evaluate
     metrics = evaluate_model(model, X_test, y_test)
+    
+    # Baseline comparison (coin flip baselines for imbalanced data)
+    baseline = create_imbalance_baselines(random_state=random_state)
+    baseline.fit(y_train)
+    baseline_results = baseline.evaluate(y_test, class_names=CLASS_NAMES)
+    
+    model_metrics = {
+        "accuracy": metrics["accuracy"],
+        "f1_macro": metrics["f1_macro"],
+        "f1_weighted": metrics["f1_weighted"],
+    }
+    print_dual_baseline_comparison(
+        model_metrics=model_metrics,
+        baseline_results=baseline_results,
+        model_name="Simple RF",
+        primary_metric="f1_macro",
+    )
     
     # Save
     save_model(model, encoders, feature_cols, metrics)

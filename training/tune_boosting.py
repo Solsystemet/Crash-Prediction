@@ -1,11 +1,12 @@
-"""Hyperparameter tuning for gradient boosting models using Optuna.
+"""Hyperparameter tuning for tree-based models using Optuna.
 
-Tunes LightGBM, XGBoost, and CatBoost with Bayesian optimization.
+Tunes LightGBM, XGBoost, CatBoost, and Random Forest with Bayesian optimization.
 Uses 5-fold stratified CV with macro F1 as the objective.
 
 Usage:
     python training/tune_boosting.py
     python training/tune_boosting.py --model lgbm --n-trials 100
+    python training/tune_boosting.py --model rf --n-trials 50
     python training/tune_boosting.py --model all --sample 100000
 """
 
@@ -23,6 +24,7 @@ from typing import Any, Literal
 import joblib
 import numpy as np
 import pandas as pd
+from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import f1_score, accuracy_score, classification_report, confusion_matrix
 from sklearn.model_selection import StratifiedKFold, train_test_split
 from sklearn.preprocessing import LabelEncoder
@@ -35,6 +37,10 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from data_preparation.helpers.csv_loaders import get_traffic_crashes
+from training.baselines import (
+    create_imbalance_baselines,
+    print_dual_baseline_comparison,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -361,11 +367,83 @@ def tune_catboost(X: np.ndarray, y: np.ndarray, n_trials: int = 50) -> tuple[dic
 
 
 # ============================================================================
+# Random Forest Tuning
+# ============================================================================
+
+def objective_rf(trial, X: np.ndarray, y: np.ndarray, cv: StratifiedKFold) -> float:
+    """Optuna objective function for Random Forest."""
+    # Handle max_depth: can be None or an integer
+    max_depth_choice = trial.suggest_categorical("max_depth_type", ["none", "int"])
+    if max_depth_choice == "none":
+        max_depth = None
+    else:
+        max_depth = trial.suggest_int("max_depth", 5, 50)
+    
+    # Handle max_features: can be "sqrt", "log2", or a float
+    max_features_type = trial.suggest_categorical("max_features_type", ["sqrt", "log2", "float"])
+    if max_features_type == "float":
+        max_features = trial.suggest_float("max_features_float", 0.3, 0.9)
+    else:
+        max_features = max_features_type
+    
+    params = {
+        "n_estimators": trial.suggest_int("n_estimators", 100, 1000),
+        "max_depth": max_depth,
+        "min_samples_split": trial.suggest_int("min_samples_split", 2, 20),
+        "min_samples_leaf": trial.suggest_int("min_samples_leaf", 1, 10),
+        "max_features": max_features,
+        "bootstrap": trial.suggest_categorical("bootstrap", [True, False]),
+        "class_weight": trial.suggest_categorical("class_weight", ["balanced", "balanced_subsample"]),
+        "criterion": trial.suggest_categorical("criterion", ["gini", "entropy"]),
+        "n_jobs": -1,
+        "random_state": 42,
+    }
+    
+    # bootstrap must be True for balanced_subsample
+    if params["class_weight"] == "balanced_subsample" and not params["bootstrap"]:
+        params["bootstrap"] = True
+    
+    f1_scores = []
+    for train_idx, val_idx in cv.split(X, y):
+        X_train, X_val = X[train_idx], X[val_idx]
+        y_train, y_val = y[train_idx], y[val_idx]
+        
+        model = RandomForestClassifier(**params)
+        model.fit(X_train, y_train)
+        
+        y_pred = model.predict(X_val)
+        f1_scores.append(f1_score(y_val, y_pred, average="macro"))
+    
+    return np.mean(f1_scores)
+
+
+def tune_rf(X: np.ndarray, y: np.ndarray, n_trials: int = 50) -> tuple[dict, float]:
+    """Tune Random Forest hyperparameters."""
+    import optuna
+    
+    optuna.logging.set_verbosity(optuna.logging.WARNING)
+    
+    cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+    
+    study = optuna.create_study(direction="maximize", study_name="rf_tuning")
+    study.optimize(
+        lambda trial: objective_rf(trial, X, y, cv),
+        n_trials=n_trials,
+        show_progress_bar=True,
+    )
+    
+    logger.info(f"Random Forest best F1 (CV): {study.best_value:.4f}")
+    logger.info(f"Random Forest best params: {study.best_params}")
+    
+    return study.best_params, study.best_value
+
+
+# ============================================================================
 # Training Final Models
 # ============================================================================
 
 def train_final_model(
-    model_type: Literal["lgbm", "xgb", "catboost"],
+    model_type: Literal["lgbm", "xgb", "catboost", "rf"],
     best_params: dict,
     X_train: np.ndarray,
     y_train: np.ndarray,
@@ -433,6 +511,45 @@ def train_final_model(
             eval_set=(X_val, y_val),
             early_stopping_rounds=50,
         )
+        
+    elif model_type == "rf":
+        # Reconstruct RF params from trial params
+        max_depth_type = best_params.get("max_depth_type", "int")
+        if max_depth_type == "none":
+            max_depth = None
+        else:
+            max_depth = best_params.get("max_depth", 20)
+        
+        max_features_type = best_params.get("max_features_type", "sqrt")
+        if max_features_type == "float":
+            max_features = best_params.get("max_features_float", 0.5)
+        else:
+            max_features = max_features_type
+        
+        bootstrap = best_params.get("bootstrap", True)
+        class_weight = best_params.get("class_weight", "balanced")
+        
+        # Ensure bootstrap is True for balanced_subsample
+        if class_weight == "balanced_subsample" and not bootstrap:
+            bootstrap = True
+        
+        params = {
+            "n_estimators": best_params.get("n_estimators", 500),
+            "max_depth": max_depth,
+            "min_samples_split": best_params.get("min_samples_split", 2),
+            "min_samples_leaf": best_params.get("min_samples_leaf", 1),
+            "max_features": max_features,
+            "bootstrap": bootstrap,
+            "class_weight": class_weight,
+            "criterion": best_params.get("criterion", "gini"),
+            "n_jobs": -1,
+            "random_state": 42,
+        }
+        model = RandomForestClassifier(**params)
+        # Combine train and val for final model (RF doesn't use early stopping)
+        X_combined = np.vstack([X_train, X_val])
+        y_combined = np.concatenate([y_train, y_val])
+        model.fit(X_combined, y_combined)
     else:
         raise ValueError(f"Unknown model type: {model_type}")
     
@@ -506,7 +623,7 @@ def save_results(
 
 
 def main(
-    model_type: Literal["lgbm", "xgb", "catboost", "all"] = "all",
+    model_type: Literal["lgbm", "xgb", "catboost", "rf", "all"] = "all",
     n_trials: int = 50,
     sample_size: int | None = None,
 ) -> None:
@@ -534,7 +651,7 @@ def main(
     
     models_to_tune = []
     if model_type == "all":
-        models_to_tune = ["lgbm", "xgb", "catboost"]
+        models_to_tune = ["lgbm", "xgb", "catboost", "rf"]
     else:
         models_to_tune = [model_type]
     
@@ -552,6 +669,8 @@ def main(
                 best_params, cv_score = tune_xgb(X_trainval, y_trainval, n_trials)
             elif mt == "catboost":
                 best_params, cv_score = tune_catboost(X_trainval, y_trainval, n_trials)
+            elif mt == "rf":
+                best_params, cv_score = tune_rf(X_trainval, y_trainval, n_trials)
             else:
                 continue
             
@@ -582,6 +701,26 @@ def main(
     logger.info(f"{'='*60}")
     for mt, scores in results_summary.items():
         logger.info(f"{mt.upper()}: CV F1={scores['cv_f1']:.4f}, Test F1={scores['test_f1']:.4f}")
+    
+    # Baseline comparison (coin flip baselines for imbalanced data)
+    if results_summary:
+        baseline = create_imbalance_baselines()
+        baseline.fit(y_trainval)
+        baseline_results = baseline.evaluate(y_test, class_names=CLASS_NAMES)
+        
+        # Compare best model against both baselines
+        best_model = max(results_summary.items(), key=lambda x: x[1]["test_f1"])
+        best_model_name = best_model[0].upper()
+        best_model_metrics = {
+            "f1_macro": best_model[1]["test_f1"],
+        }
+        
+        print_dual_baseline_comparison(
+            model_metrics=best_model_metrics,
+            baseline_results=baseline_results,
+            model_name=best_model_name,
+            primary_metric="f1_macro",
+        )
 
 
 if __name__ == "__main__":
@@ -589,7 +728,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--model",
         type=str,
-        choices=["lgbm", "xgb", "catboost", "all"],
+        choices=["lgbm", "xgb", "catboost", "rf", "all"],
         default="all",
         help="Model type to tune",
     )

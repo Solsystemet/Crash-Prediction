@@ -6,13 +6,23 @@ to establish performance floors that trained models must beat.
 Baselines are controlled via CLI flag `--with-baseline` (default: enabled).
 Disable with `--no-baseline` to skip baseline evaluation.
 
+For imbalanced classification problems (like crash severity prediction), use:
+    - "coin_flip": Random uniform predictions (equal probability per class)
+    - "biased_coin_flip": Random predictions weighted by training class distribution
+
 Usage:
     from training.baselines import ClassificationBaseline, RegressionBaseline
+    from training.baselines import create_imbalance_baselines
 
     # Classification baseline
     baseline = ClassificationBaseline(strategies=["most_frequent", "stratified"])
     baseline.fit(y_train)
     baseline_metrics = baseline.evaluate(y_test, class_names=["A", "B", "C"])
+
+    # Imbalance-aware baselines (coin flip strategies)
+    baseline = create_imbalance_baselines()
+    baseline.fit(y_train)
+    baseline_metrics = baseline.evaluate(y_test, class_names=["NO_INJURY", "MINOR", "SEVERE"])
 
     # Regression baseline
     baseline = RegressionBaseline(strategies=["mean", "median"])
@@ -47,6 +57,13 @@ logger = logging.getLogger(__name__)
 ClassificationStrategy = Literal["most_frequent", "stratified", "prior", "uniform"]
 RegressionStrategy = Literal["mean", "median", "constant"]
 
+# User-friendly aliases for imbalanced classification baselines
+# These map to sklearn DummyClassifier strategies
+STRATEGY_ALIASES: dict[str, str] = {
+    "coin_flip": "uniform",           # Equal probability per class (1/n_classes)
+    "biased_coin_flip": "stratified",  # Weighted by training class distribution
+}
+
 
 @dataclass
 class BaselineResult:
@@ -69,21 +86,32 @@ class ClassificationBaseline:
         - "stratified": Random predictions weighted by class distribution
         - "prior": Same as stratified (alias)
         - "uniform": Random uniform predictions
+
+    Imbalance-aware aliases (for class-imbalanced problems):
+        - "coin_flip": Same as "uniform" (equal 1/n_classes probability)
+        - "biased_coin_flip": Same as "stratified" (weighted by class distribution)
     """
 
     def __init__(
         self,
-        strategies: list[ClassificationStrategy] | None = None,
+        strategies: list[str] | None = None,
         random_state: int = 42,
     ):
         """Initialize classification baseline.
 
         Args:
             strategies: List of baseline strategies to evaluate.
+                Supports aliases: "coin_flip" -> "uniform", "biased_coin_flip" -> "stratified".
                 Default: ["most_frequent", "stratified"]
             random_state: Random seed for reproducibility.
         """
-        self.strategies = strategies or ["most_frequent", "stratified"]
+        raw_strategies = strategies or ["most_frequent", "stratified"]
+        # Resolve aliases while preserving user-facing names
+        self._strategy_mapping: dict[str, str] = {}
+        for s in raw_strategies:
+            sklearn_strategy = STRATEGY_ALIASES.get(s, s)
+            self._strategy_mapping[s] = sklearn_strategy
+        self.strategies = raw_strategies
         self.random_state = random_state
         self._models: dict[str, DummyClassifier] = {}
         self._is_fitted = False
@@ -100,10 +128,11 @@ class ClassificationBaseline:
         # Create dummy X (DummyClassifier ignores features but requires X)
         X_dummy = np.zeros((len(y_train), 1))
 
-        for strategy in self.strategies:
-            model = DummyClassifier(strategy=strategy, random_state=self.random_state)
+        for user_strategy in self.strategies:
+            sklearn_strategy = self._strategy_mapping[user_strategy]
+            model = DummyClassifier(strategy=sklearn_strategy, random_state=self.random_state)
             model.fit(X_dummy, y_train)
-            self._models[strategy] = model
+            self._models[user_strategy] = model
 
         self._is_fitted = True
         return self
@@ -608,3 +637,129 @@ def add_baseline_args(parser: "argparse.ArgumentParser") -> None:
         action="store_true",
         help="Skip baseline evaluation",
     )
+
+
+def create_imbalance_baselines(random_state: int = 42) -> ClassificationBaseline:
+    """Create baselines suitable for imbalanced classification problems.
+
+    Returns a ClassificationBaseline configured with two strategies:
+        - "coin_flip": Random uniform predictions (equal probability per class)
+        - "biased_coin_flip": Random predictions weighted by training class distribution
+
+    These baselines help establish meaningful performance floors for imbalanced
+    datasets where the majority class dominates. A model should beat both:
+        - coin_flip: Shows model is better than random guessing
+        - biased_coin_flip: Shows model learns beyond class distribution
+
+    Args:
+        random_state: Random seed for reproducibility.
+
+    Returns:
+        ClassificationBaseline configured with coin flip strategies.
+
+    Example:
+        >>> baseline = create_imbalance_baselines()
+        >>> baseline.fit(y_train)
+        >>> results = baseline.evaluate(y_test, class_names=["NO_INJURY", "MINOR", "SEVERE"])
+        >>> # results["coin_flip"] - uniform random baseline
+        >>> # results["biased_coin_flip"] - class-weighted random baseline
+    """
+    return ClassificationBaseline(
+        strategies=["coin_flip", "biased_coin_flip"],
+        random_state=random_state,
+    )
+
+
+def print_dual_baseline_comparison(
+    model_metrics: dict[str, float],
+    baseline_results: dict[str, BaselineResult],
+    model_name: str = "Model",
+    primary_metric: str | None = None,
+) -> None:
+    """Print comparison of model against both coin flip baselines in one table.
+
+    Shows model metrics alongside both baseline strategies for easy comparison.
+
+    Args:
+        model_metrics: Dictionary of model metric values.
+        baseline_results: Baseline results containing 'coin_flip' and 'biased_coin_flip'.
+        model_name: Display name for the model.
+        primary_metric: Key metric to highlight with ★.
+    """
+    coin_flip = baseline_results.get("coin_flip")
+    biased_flip = baseline_results.get("biased_coin_flip")
+
+    if not coin_flip or not biased_flip:
+        print("Warning: Both coin_flip and biased_coin_flip baselines required")
+        return
+
+    metrics_to_show = [m for m in model_metrics.keys() if m in coin_flip.metrics]
+
+    if not metrics_to_show:
+        print("Warning: No common metrics found between model and baselines")
+        return
+
+    # Box characters
+    TL, TR, BL, BR = "╔", "╗", "╚", "╝"
+    H, V = "═", "║"
+    LT, RT, HL, VL, X = "╠", "╣", "─", "│", "╬"
+
+    total_width = 82
+
+    print()
+    print(f"{TL}{H * (total_width - 2)}{TR}")
+    title = "MODEL VS BASELINES COMPARISON"
+    padding = (total_width - 2 - len(title)) // 2
+    print(f"{V}{' ' * padding}{title}{' ' * (total_width - 2 - padding - len(title))}{V}")
+    print(f"{LT}{H * (total_width - 2)}{RT}")
+
+    # Truncate model name if too long
+    display_name = model_name[:10] if len(model_name) > 10 else model_name
+    header = f"{V}  {'Metric':<14} {VL} {display_name:^10} {VL} {'Coin Flip':^10} {VL} {'Biased CF':^10} {VL} {'vs CF':^8} {VL} {'vs Bias':^8} {V}"
+    print(header)
+    print(f"{LT}{HL * 16}{X}{HL * 12}{X}{HL * 12}{X}{HL * 12}{X}{HL * 10}{X}{HL * 10}{RT}")
+
+    wins_vs_coin = 0
+    wins_vs_biased = 0
+    total = 0
+
+    for metric in metrics_to_show:
+        model_val = model_metrics[metric]
+        coin_val = coin_flip.metrics.get(metric, 0)
+        biased_val = biased_flip.metrics.get(metric, 0)
+
+        # Calculate improvements
+        if coin_val > 0:
+            vs_coin = ((model_val - coin_val) / coin_val) * 100
+            vs_coin_str = f"+{vs_coin:.0f}%" if vs_coin > 0 else f"{vs_coin:.0f}%"
+        else:
+            vs_coin_str = "N/A"
+            vs_coin = 0
+
+        if biased_val > 0:
+            vs_biased = ((model_val - biased_val) / biased_val) * 100
+            vs_biased_str = f"+{vs_biased:.0f}%" if vs_biased > 0 else f"{vs_biased:.0f}%"
+        else:
+            vs_biased_str = "N/A"
+            vs_biased = 0
+
+        if model_val > coin_val:
+            wins_vs_coin += 1
+        if model_val > biased_val:
+            wins_vs_biased += 1
+        total += 1
+
+        label = f"{metric} ★" if metric == primary_metric else metric
+        line = f"{V}  {label:<14} {VL} {model_val:^10.4f} {VL} {coin_val:^10.4f} {VL} {biased_val:^10.4f} {VL} {vs_coin_str:^8} {VL} {vs_biased_str:^8} {V}"
+        print(line)
+
+    print(f"{LT}{H * (total_width - 2)}{RT}")
+    if primary_metric:
+        print(f"{V}  {'★ = Primary metric':<{total_width - 4}}{V}")
+
+    coin_result = "✓ BEATS" if wins_vs_coin == total else f"✗ {wins_vs_coin}/{total}"
+    biased_result = "✓ BEATS" if wins_vs_biased == total else f"✗ {wins_vs_biased}/{total}"
+    summary = f"vs Coin Flip: {coin_result}  |  vs Biased: {biased_result}"
+    print(f"{V}  {summary:<{total_width - 4}}{V}")
+    print(f"{BL}{H * (total_width - 2)}{BR}")
+    print()

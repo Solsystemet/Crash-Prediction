@@ -67,9 +67,10 @@ from training.baselines import (
     ClassificationBaseline,
     compare_to_baseline,
     log_comparison,
-    print_baseline_comparison_box,
+    print_dual_baseline_comparison,
     add_baseline_args,
     BaselineResult,
+    create_imbalance_baselines,
 )
 
 logging.basicConfig(
@@ -845,22 +846,43 @@ def run_zoned_pipeline(
             severe_prop = df["MOST_SEVERE_INJURY"].isin(["FATAL", "INCAPACITATING INJURY"]).mean()
             minor_prop = df["MOST_SEVERE_INJURY"].isin(["NONINCAPACITATING INJURY", "REPORTED, NOT EVIDENT"]).mean()
             no_injury_prop = 1.0 - severe_prop - minor_prop
+            n_classes = 3
 
-            # Most frequent baseline metrics
-            baseline_accuracy = no_injury_prop
-            baseline_f1_macro = (2 * no_injury_prop / (1 + no_injury_prop)) / 3
-            baseline_f1_weighted = no_injury_prop * 2 * no_injury_prop / (1 + no_injury_prop)
-            baseline_severe_recall = 0.0  # Always predicts NO_INJURY, never catches SEVERE
+            # Coin flip baseline (uniform random): each class has 1/3 probability
+            coin_flip_accuracy = 1.0 / n_classes  # ~0.333
+            coin_flip_f1_macro = 1.0 / n_classes  # Uniform predictions
+            coin_flip_f1_weighted = 1.0 / n_classes
+            coin_flip_severe_recall = 1.0 / n_classes  # Random guess catches 1/3 of SEVERE
 
-            # Build baseline result
+            # Biased coin flip baseline (stratified): weighted by class distribution
+            # Expected accuracy = sum of (class_prop^2) for each class
+            biased_accuracy = no_injury_prop**2 + minor_prop**2 + severe_prop**2
+            # Expected F1 macro approximation for stratified random
+            biased_f1_macro = (2 * no_injury_prop**2 / (no_injury_prop + no_injury_prop) + 
+                               2 * minor_prop**2 / (minor_prop + minor_prop) +
+                               2 * severe_prop**2 / (severe_prop + severe_prop)) / 3 if (no_injury_prop > 0 and minor_prop > 0 and severe_prop > 0) else 0.0
+            biased_f1_macro = (no_injury_prop + minor_prop + severe_prop) / 3  # Simplified: class_prop for each
+            biased_f1_weighted = no_injury_prop**2 + minor_prop**2 + severe_prop**2
+            biased_severe_recall = severe_prop  # Stratified predicts SEVERE at its true rate
+
+            # Build baseline results with coin flip naming
             baseline_results = {
-                "most_frequent": BaselineResult(
-                    strategy="most_frequent",
+                "coin_flip": BaselineResult(
+                    strategy="coin_flip",
                     metrics={
-                        "accuracy": baseline_accuracy,
-                        "f1_macro": baseline_f1_macro,
-                        "f1_weighted": baseline_f1_weighted,
-                        "recall_SEVERE": baseline_severe_recall,
+                        "accuracy": coin_flip_accuracy,
+                        "f1_macro": coin_flip_f1_macro,
+                        "f1_weighted": coin_flip_f1_weighted,
+                        "recall_SEVERE": coin_flip_severe_recall,
+                    },
+                ),
+                "biased_coin_flip": BaselineResult(
+                    strategy="biased_coin_flip",
+                    metrics={
+                        "accuracy": biased_accuracy,
+                        "f1_macro": biased_f1_macro,
+                        "f1_weighted": biased_f1_weighted,
+                        "recall_SEVERE": biased_severe_recall,
                     },
                 ),
             }
@@ -875,20 +897,12 @@ def run_zoned_pipeline(
 
             comparison = compare_to_baseline(model_metrics, baseline_results)
 
-            # Print comparison box
-            print_baseline_comparison_box(
+            # Print comparison against both baselines
+            print_dual_baseline_comparison(
                 model_metrics=model_metrics,
                 baseline_results=baseline_results,
-                comparison=comparison,
                 model_name="Zone Ensemble",
-                baseline_strategy="most_frequent",
                 primary_metric="recall_SEVERE",
-                metric_labels={
-                    "accuracy": "Accuracy",
-                    "f1_macro": "F1 Macro",
-                    "f1_weighted": "F1 Weighted",
-                    "recall_SEVERE": "SEVERE Recall",
-                },
             )
 
     return zone_results
