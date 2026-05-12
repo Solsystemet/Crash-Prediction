@@ -36,6 +36,10 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from data_preparation.helpers.csv_loaders import get_traffic_crashes
 from training.ensemble.stacking import StackingEnsemble  # Required for unpickling
+from training.baselines import (
+    create_imbalance_baselines,
+    print_dual_baseline_comparison,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -82,8 +86,12 @@ INJURY_MAPPING = {
 }
 
 
-def prepare_test_data(sample_size: int | None = None) -> tuple[np.ndarray, np.ndarray, list[str]]:
-    """Load and prepare test data using the same preprocessing as training."""
+def prepare_test_data(sample_size: int | None = None) -> tuple[np.ndarray, np.ndarray, np.ndarray, list[str]]:
+    """Load and prepare test data using the same preprocessing as training.
+    
+    Returns:
+        X_test, y_test, y_train (for baseline fitting), feature_names
+    """
     logger.info("Loading crash data...")
     df = get_traffic_crashes()
     
@@ -144,11 +152,11 @@ def prepare_test_data(sample_size: int | None = None) -> tuple[np.ndarray, np.nd
     y = df["SEVERITY_3CLASS"].values
     
     # Use same test split as training (20%)
-    _, X_test, _, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
+    _, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
     
     logger.info(f"Test set: {len(X_test)} samples")
     
-    return X_test, y_test, feature_cols
+    return X_test, y_test, y_train, feature_cols
 
 
 def load_model(model_dir: Path) -> Any | None:
@@ -277,7 +285,7 @@ def main(sample_size: int | None = None) -> None:
     logger.info("Starting model comparison...")
     
     # Prepare test data
-    X_test, y_test, feature_names = prepare_test_data(sample_size)
+    X_test, y_test, y_train, feature_names = prepare_test_data(sample_size)
     
     # Find all models
     models = find_all_models()
@@ -309,6 +317,32 @@ def main(sample_size: int | None = None) -> None:
     # Print and save comparison
     print_comparison_table(results)
     save_comparison(results)
+    
+    # Baseline comparison (coin flip baselines for imbalanced data)
+    if results:
+        logger.info(f"\n{'='*60}")
+        logger.info("BASELINE COMPARISON")
+        logger.info(f"{'='*60}")
+        
+        baseline = create_imbalance_baselines()
+        baseline.fit(y_train)
+        baseline_results = baseline.evaluate(y_test, class_names=CLASS_NAMES)
+        
+        # Compare best model against both baselines
+        best_model = max(results, key=lambda x: x["f1_macro"])
+        best_model_name = best_model["model_name"]
+        best_model_metrics = {
+            "accuracy": best_model["accuracy"],
+            "f1_macro": best_model["f1_macro"],
+            "f1_weighted": best_model.get("f1_weighted", best_model["f1_macro"]),
+        }
+        
+        print_dual_baseline_comparison(
+            model_metrics=best_model_metrics,
+            baseline_results=baseline_results,
+            model_name=best_model_name,
+            primary_metric="f1_macro",
+        )
 
 
 if __name__ == "__main__":

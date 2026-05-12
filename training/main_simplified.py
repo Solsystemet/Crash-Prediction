@@ -63,8 +63,9 @@ from training.baselines import (
     ClassificationBaseline,
     compare_to_baseline,
     log_comparison,
-    print_baseline_comparison_box,
+    print_dual_baseline_comparison,
     add_baseline_args,
+    create_imbalance_baselines,
 )
 
 logging.basicConfig(
@@ -451,19 +452,16 @@ def run_simplified_pipeline(
     logger.info("\n[6/6] Evaluating on test set...")
     results = evaluate_simplified(clf, X_test, targets_test)
 
-    # Baseline evaluation
+    # Baseline evaluation (coin flip baselines for imbalanced data)
     if with_baseline:
-        baseline = ClassificationBaseline(
-            strategies=["most_frequent", "stratified"],
-            random_state=config.random_state,
-        )
+        baseline = create_imbalance_baselines(random_state=config.random_state)
         baseline.fit(targets_train.y_simplified)
         baseline_results = baseline.evaluate(
             targets_test.y_simplified,
             class_names=SIMPLIFIED_CLASS_NAMES,
         )
 
-        # Compare model to baseline
+        # Compare model to both baselines
         model_metrics = {
             "accuracy": results["accuracy"],
             "f1_macro": results["f1_macro"],
@@ -472,20 +470,12 @@ def run_simplified_pipeline(
         }
         comparison = compare_to_baseline(model_metrics, baseline_results)
 
-        # Print comparison box (use stratified baseline since we stratified-sample the training data)
-        print_baseline_comparison_box(
+        # Print comparison against both baselines
+        print_dual_baseline_comparison(
             model_metrics=model_metrics,
             baseline_results=baseline_results,
-            comparison=comparison,
-            model_name="Simplified Classifier",
-            baseline_strategy="stratified",
+            model_name="Simplified",
             primary_metric="recall_SEVERE",
-            metric_labels={
-                "accuracy": "Accuracy",
-                "f1_macro": "F1 Macro",
-                "f1_weighted": "F1 Weighted",
-                "recall_SEVERE": "SEVERE Recall",
-            },
         )
 
         # Store baseline results
