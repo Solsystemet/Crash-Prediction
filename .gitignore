@@ -217,6 +217,7 @@ __marimo__/
 # trained models
 models/plots/
 models/trained/*
+models/trained.zip
 
 # CatBoost training artifacts
 catboost_info/
