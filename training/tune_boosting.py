@@ -41,20 +41,32 @@ warnings.filterwarnings("ignore", category=UserWarning)
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from data_preparation.helpers.csv_loaders import get_traffic_crashes
+from data_preparation.triple_merge import triple_merge, DataSourceConfig
 from training.baselines import (
     create_imbalance_baselines,
     print_dual_baseline_comparison,
 )
+from training.feature_selection import filter_by_importance
+from training.metrics_schema import export_model_vs_baselines_csv
+from utils.logging_config import setup_logging
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s",
-)
-logger = logging.getLogger(__name__)
+logger = setup_logging(__name__)
 
-# Output directory
-OUTPUT_DIR = PROJECT_ROOT / "models" / "trained" / "tuned_boosting"
+# Base model name for output directory
+MODEL_NAME = "tuned_boosting"
+
+
+def get_output_dir(config: DataSourceConfig) -> Path:
+    """Get output directory based on data source configuration.
+    
+    Args:
+        config: Data source configuration specifying which datasets are included.
+        
+    Returns:
+        Path to model output directory.
+    """
+    return PROJECT_ROOT / "models" / "trained" / f"{MODEL_NAME}_{config.get_name_suffix()}"
+
 
 # Class names
 CLASS_NAMES = ["NO_INJURY", "MINOR", "SEVERE"]
@@ -97,9 +109,12 @@ def detect_gpu() -> bool:
     # Fallback: check for CUDA libraries
     try:
         import xgboost as xgb
-        # Try to create a small GPU model
-        params = {"tree_method": "gpu_hist", "n_estimators": 1}
+        # Try to create a small GPU model (XGBoost 2.0+ uses device='cuda')
+        params = {"tree_method": "hist", "device": "cuda", "n_estimators": 1}
         model = xgb.XGBClassifier(**params)
+        # Actually try to fit to verify GPU works
+        import numpy as np
+        model.fit(np.array([[1,2],[3,4]]), np.array([0,1]))
         return True
     except Exception:
         return False
@@ -114,17 +129,27 @@ INJURY_MAPPING = {
 }
 
 
-def prepare_data(sample_size: int | None = None) -> tuple[np.ndarray, np.ndarray, list[str], dict]:
+def prepare_data(
+    sample_size: int | None = None,
+    config: DataSourceConfig | None = None,
+    feature_filter: str = "drop-low",
+) -> tuple[np.ndarray, np.ndarray, list[str], dict]:
     """Load and prepare data for training.
     
     Args:
         sample_size: Optional sample size limit.
+        config: Data source configuration (default: crash only).
+        feature_filter: Feature filtering mode ('none', 'drop-low', 'drop-review').
         
     Returns:
         X, y, feature_names, encoders
     """
+    if config is None:
+        config = DataSourceConfig(use_vehicles=False, use_people=False, use_weather=False)
+    
+    logger.info(f"Data configuration: {config}")
     logger.info("Loading crash data...")
-    df = get_traffic_crashes()
+    df = triple_merge(config=config, verbose=False)
     
     if sample_size and len(df) > sample_size:
         df = df.sample(n=sample_size, random_state=42)
@@ -170,7 +195,20 @@ def prepare_data(sample_size: int | None = None) -> tuple[np.ndarray, np.ndarray
     
     # Prepare X and y
     feature_cols = [c for c in CATEGORICAL_FEATURES + NUMERICAL_FEATURES if c in df.columns]
-    X = df[feature_cols].values
+    
+    # Apply importance-based feature filtering if enabled
+    if feature_filter != "none":
+        df_features = df[feature_cols].copy()
+        df_features, feature_cols, filter_result = filter_by_importance(
+            df_features, feature_cols, mode=feature_filter
+        )
+        logger.info(f"Feature filter '{feature_filter}': {filter_result.n_original} -> {filter_result.n_kept} features")
+        if filter_result.dropped_features:
+            logger.info(f"Dropped features: {filter_result.dropped_features[:5]}{'...' if len(filter_result.dropped_features) > 5 else ''}")
+        X = df_features.values
+    else:
+        X = df[feature_cols].values
+    
     y = df["SEVERITY_3CLASS"].values
     
     logger.info(f"Data prepared: {X.shape[0]} samples, {X.shape[1]} features")
@@ -287,7 +325,8 @@ def objective_xgb(trial, X: np.ndarray, y: np.ndarray, cv: StratifiedKFold, use_
         "verbosity": 0,
         "n_jobs": -1,
         "random_state": 42,
-        "tree_method": "gpu_hist" if use_gpu else "hist",
+        "tree_method": "hist",
+        "device": "cuda" if use_gpu else "cpu",
         # Tunable parameters (narrowed ranges)
         "learning_rate": trial.suggest_float("learning_rate", 0.02, 0.2, log=True),
         "n_estimators": trial.suggest_int("n_estimators", 150, 500),
@@ -534,6 +573,7 @@ def train_final_model(
     y_train: np.ndarray,
     X_val: np.ndarray,
     y_val: np.ndarray,
+    use_gpu: bool = False,
 ) -> Any:
     """Train final model with best hyperparameters."""
     
@@ -569,6 +609,7 @@ def train_final_model(
             "n_jobs": -1,
             "random_state": 42,
             "tree_method": "hist",
+            "device": "cuda" if use_gpu else "cpu",
             **best_params,
         }
         model = xgb.XGBClassifier(**params)
@@ -679,9 +720,10 @@ def save_results(
     test_metrics: dict,
     feature_names: list[str],
     encoders: dict,
+    output_dir: Path,
 ) -> None:
     """Save tuned model and results."""
-    model_dir = OUTPUT_DIR / model_type
+    model_dir = output_dir / model_type
     model_dir.mkdir(parents=True, exist_ok=True)
     
     # Save model
@@ -712,7 +754,9 @@ def main(
     n_trials: int = 50,
     sample_size: int | None = None,
     use_gpu: bool | None = None,
-) -> None:
+    config: DataSourceConfig | None = None,
+    feature_filter: str = "drop-low",
+) -> dict[str, dict]:
     """Main tuning pipeline.
     
     Args:
@@ -720,7 +764,14 @@ def main(
         n_trials: Number of Optuna trials per model.
         sample_size: Optional sample size for faster iteration.
         use_gpu: Use GPU for XGBoost/CatBoost. None=auto-detect.
+        config: Data source configuration (default: crash only).
+        feature_filter: Feature filtering mode ('none', 'drop-low', 'drop-review').
     """
+    if config is None:
+        config = DataSourceConfig(use_vehicles=False, use_people=False, use_weather=False)
+    
+    output_dir = get_output_dir(config)
+    
     # Auto-detect GPU if not specified
     if use_gpu is None:
         use_gpu = detect_gpu()
@@ -728,11 +779,14 @@ def main(
     else:
         logger.info(f"GPU mode: {'enabled' if use_gpu else 'disabled'}")
     
+    logger.info(f"Data configuration: {config}")
+    logger.info(f"Output directory: {output_dir}")
     logger.info(f"Starting hyperparameter tuning: model={model_type}, n_trials={n_trials}")
     logger.info(f"Using {CV_FOLDS}-fold CV with pruning (warmup={PRUNING_WARMUP_STEPS})")
+    logger.info(f"Feature filter: {feature_filter}")
     
     # Prepare data
-    X, y, feature_names, encoders = prepare_data(sample_size)
+    X, y, feature_names, encoders = prepare_data(sample_size, config, feature_filter)
     
     # Train/val/test split (60/20/20)
     X_trainval, X_test, y_trainval, y_test = train_test_split(
@@ -771,17 +825,18 @@ def main(
             
             # Train final model
             logger.info(f"\nTraining final {mt.upper()} model with best params...")
-            model = train_final_model(mt, best_params, X_train, y_train, X_val, y_val)
+            model = train_final_model(mt, best_params, X_train, y_train, X_val, y_val, use_gpu)
             
             # Evaluate on test set
             test_metrics = evaluate_model(model, X_test, y_test, mt.upper())
             
             # Save
-            save_results(mt, model, best_params, cv_score, test_metrics, feature_names, encoders)
+            save_results(mt, model, best_params, cv_score, test_metrics, feature_names, encoders, output_dir)
             
             results_summary[mt] = {
                 "cv_f1": cv_score,
                 "test_f1": test_metrics["f1_macro"],
+                "test_accuracy": test_metrics["accuracy"],
             }
             
         except ImportError as e:
@@ -817,6 +872,17 @@ def main(
             primary_metric="f1_macro",
         )
 
+        # Export baseline comparison CSV
+        export_model_vs_baselines_csv(
+            model_name=f"tuned_{best_model[0]}",
+            model_metrics=best_model_metrics,
+            baseline_results=baseline_results,
+            output_dir=output_dir,
+        )
+        logger.info(f"Saved timestamped baseline comparison to {output_dir}")
+    
+    return results_summary
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Tune gradient boosting hyperparameters")
@@ -844,10 +910,47 @@ if __name__ == "__main__":
         action="store_true",
         help="Disable GPU acceleration (default: auto-detect)",
     )
+    # Data source configuration flags
+    parser.add_argument(
+        "--include-vehicle",
+        action="store_true",
+        help="Include vehicle data (count, age, types, speed violations)",
+    )
+    parser.add_argument(
+        "--include-people",
+        action="store_true",
+        help="Include people data (demographics, BAC, safety equipment)",
+    )
+    parser.add_argument(
+        "--include-weather",
+        action="store_true",
+        help="Include weather data (temperature, humidity, rain, wind)",
+    )
+    parser.add_argument(
+        "--feature-filter",
+        type=str,
+        choices=["none", "drop-low", "drop-review"],
+        default="drop-low",
+        help="Feature filtering mode: 'none' (all features), 'drop-low' (drop DROP features), 'drop-review' (drop DROP + REVIEW). Default: drop-low",
+    )
     
     args = parser.parse_args()
     
     # Determine GPU mode: None = auto-detect, False = disabled
     use_gpu = None if not args.no_gpu else False
     
-    main(model_type=args.model, n_trials=args.n_trials, sample_size=args.sample, use_gpu=use_gpu)
+    # Build data source configuration from CLI flags
+    config = DataSourceConfig(
+        use_vehicles=args.include_vehicle,
+        use_people=args.include_people,
+        use_weather=args.include_weather,
+    )
+    
+    main(
+        model_type=args.model,
+        n_trials=args.n_trials,
+        sample_size=args.sample,
+        use_gpu=use_gpu,
+        config=config,
+        feature_filter=args.feature_filter,
+    )

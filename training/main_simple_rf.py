@@ -42,20 +42,33 @@ from sklearn.preprocessing import LabelEncoder
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from data_preparation.helpers.csv_loaders import get_traffic_crashes
+from data_preparation.triple_merge import triple_merge, DataSourceConfig
 from training.baselines import (
     create_imbalance_baselines,
     print_dual_baseline_comparison,
 )
+from training.feature_selection import filter_by_importance
+from training.metrics_schema import export_model_vs_baselines_csv
+from utils.logging_config import setup_logging
+from utils.csv_filename_generator import generate_csv_filename
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s",
-)
-logger = logging.getLogger(__name__)
+logger = setup_logging(__name__)
 
-# Output directory
-OUTPUT_DIR = PROJECT_ROOT / "models" / "trained" / "simple_rf"
+# Base model name for output directory
+MODEL_NAME = "simple_rf"
+
+
+def get_output_dir(config: DataSourceConfig) -> Path:
+    """Get output directory based on data source configuration.
+    
+    Args:
+        config: Data source configuration specifying which datasets are included.
+        
+    Returns:
+        Path to model output directory (e.g., models/trained/simple_rf_crash_vehicle/).
+    """
+    return PROJECT_ROOT / "models" / "trained" / f"{MODEL_NAME}_{config.get_name_suffix()}"
+
 
 # Class names (same as simplified model for compatibility)
 CLASS_NAMES = ["NO_INJURY", "MINOR", "SEVERE"]
@@ -255,6 +268,7 @@ def save_model(
     encoders: dict[str, LabelEncoder],
     feature_names: list[str],
     metrics: dict,
+    output_dir: Path,
 ) -> None:
     """Save model and encoders to disk.
 
@@ -263,39 +277,57 @@ def save_model(
         encoders: Dictionary of label encoders.
         feature_names: List of feature column names.
         metrics: Training metrics.
+        output_dir: Directory to save model artifacts.
     """
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    output_dir.mkdir(parents=True, exist_ok=True)
     
     # Save model
-    model_path = OUTPUT_DIR / "model.joblib"
+    model_path = output_dir / "model.joblib"
     joblib.dump(model, model_path)
     logger.info(f"Saved model to {model_path}")
     
     # Save encoders
-    encoders_path = OUTPUT_DIR / "encoders.joblib"
+    encoders_path = output_dir / "encoders.joblib"
     joblib.dump(encoders, encoders_path)
     logger.info(f"Saved encoders to {encoders_path}")
     
     # Save feature names
-    features_path = OUTPUT_DIR / "feature_names.joblib"
+    features_path = output_dir / "feature_names.joblib"
     joblib.dump(feature_names, features_path)
     logger.info(f"Saved feature names to {features_path}")
     
     # Save metrics
-    metrics_path = OUTPUT_DIR / "metrics.joblib"
+    metrics_path = output_dir / "metrics.joblib"
     joblib.dump(metrics, metrics_path)
     logger.info(f"Saved metrics to {metrics_path}")
 
 
-def main(sample_size: int | None = None, random_state: int = 42) -> None:
+def main(
+    sample_size: int | None = None,
+    random_state: int = 42,
+    config: DataSourceConfig | None = None,
+    feature_filter: str = "drop-low",
+) -> dict:
     """Main training pipeline.
 
     Args:
         sample_size: Optional sample size for faster iteration.
         random_state: Random seed for reproducibility.
+        config: Data source configuration (default: crash only).
+        feature_filter: Feature filtering mode ('none', 'drop-low', 'drop-review').
+
+    Returns:
+        Dictionary of evaluation metrics.
     """
+    if config is None:
+        config = DataSourceConfig(use_vehicles=False, use_people=False, use_weather=False)
+    
+    output_dir = get_output_dir(config)
+    
+    logger.info(f"Data configuration: {config}")
+    logger.info(f"Output directory: {output_dir}")
     logger.info("Loading traffic crashes data...")
-    df = get_traffic_crashes()
+    df = triple_merge(config=config, verbose=False)
     logger.info(f"Loaded {len(df)} crashes")
     
     # Sample if requested
@@ -317,7 +349,19 @@ def main(sample_size: int | None = None, random_state: int = 42) -> None:
     feature_cols = CATEGORICAL_FEATURES + NUMERICAL_FEATURES
     feature_cols = [c for c in feature_cols if c in df.columns]
     
-    X = df[feature_cols].values
+    # Apply importance-based feature filtering if enabled
+    if feature_filter != "none":
+        X_df = df[feature_cols].copy()
+        X_df, feature_cols, filter_result = filter_by_importance(
+            X_df, feature_cols, mode=feature_filter
+        )
+        logger.info(f"Feature filter '{feature_filter}': {filter_result.n_original} -> {filter_result.n_kept} features")
+        if filter_result.dropped_features:
+            logger.info(f"Dropped features: {filter_result.dropped_features[:5]}{'...' if len(filter_result.dropped_features) > 5 else ''}")
+        X = X_df.values
+    else:
+        X = df[feature_cols].values
+    
     y = df["SEVERITY_3CLASS"].values
     
     # Train/test split
@@ -353,13 +397,172 @@ def main(sample_size: int | None = None, random_state: int = 42) -> None:
         primary_metric="f1_macro",
     )
     
+    # Export baseline comparison CSV
+    export_model_vs_baselines_csv(
+        model_name="simple_rf",
+        model_metrics=model_metrics,
+        baseline_results=baseline_results,
+        output_dir=output_dir,
+    )
+    logger.info(f"Saved timestamped baseline comparison to {output_dir}")
+    
+    # Always generate feature importance CSV (no plotting dependencies required)
+    feature_importance = model.feature_importances_
+    importance_df = pd.DataFrame({
+        "feature": feature_cols,
+        "importance": feature_importance,
+    }).sort_values("importance", ascending=False)
+    
+    fi_csv_filename = generate_csv_filename("feature_importance", "simple_rf")
+    fi_csv_path = output_dir / fi_csv_filename
+    importance_df.to_csv(fi_csv_path, index=False)
+    logger.info(f"Feature importance CSV saved to {fi_csv_path}")
+    
+    # Generate evaluation plots (optional, requires matplotlib/seaborn)
+    logger.info("\nGenerating evaluation plots...")
+    try:
+        import matplotlib.pyplot as plt
+        import seaborn as sns
+        from sklearn.metrics import roc_curve, roc_auc_score
+        
+        y_pred = model.predict(X_test)
+        y_proba = model.predict_proba(X_test)
+        
+        # 1. Confusion matrix heatmap
+        cm = confusion_matrix(y_test, y_pred)
+        cm_normalized = cm.astype(float) / cm.sum(axis=1, keepdims=True)
+        
+        fig, ax = plt.subplots(figsize=(8, 6))
+        sns.heatmap(
+            cm_normalized, annot=True, fmt=".2%", cmap="Blues",
+            xticklabels=CLASS_NAMES,
+            yticklabels=CLASS_NAMES,
+            ax=ax,
+        )
+        ax.set_xlabel("Predicted")
+        ax.set_ylabel("True")
+        ax.set_title("Confusion Matrix - Simple RF")
+        plt.tight_layout()
+        cm_path = output_dir / "confusion_matrix.png"
+        plt.savefig(cm_path, dpi=150, bbox_inches="tight")
+        plt.close(fig)
+        logger.info(f"Confusion matrix saved to {cm_path}")
+        
+        # 2. Per-class recall bar chart
+        recalls = {}
+        for i, cls_name in enumerate(CLASS_NAMES):
+            mask = y_test == i
+            if mask.sum() > 0:
+                correct = ((y_test == i) & (y_pred == i)).sum()
+                recalls[cls_name] = correct / mask.sum()
+            else:
+                recalls[cls_name] = 0.0
+        
+        fig, ax = plt.subplots(figsize=(8, 5))
+        y_pos = np.arange(len(CLASS_NAMES))
+        recall_values = [recalls[cls] for cls in CLASS_NAMES]
+        colors = ["#22c55e" if r >= 0.5 else "#f97316" if r >= 0.3 else "#ef4444" for r in recall_values]
+        
+        bars = ax.barh(y_pos, recall_values, color=colors, edgecolor="black", alpha=0.8)
+        for bar, val in zip(bars, recall_values):
+            ax.text(bar.get_width() + 0.02, bar.get_y() + bar.get_height() / 2, f"{val:.1%}", va="center")
+        
+        ax.set_yticks(y_pos)
+        ax.set_yticklabels(CLASS_NAMES)
+        ax.set_xlabel("Recall")
+        ax.set_title("Per-Class Recall - Simple RF")
+        ax.set_xlim(0, 1.1)
+        ax.axvline(x=0.5, color="gray", linestyle="--", alpha=0.5)
+        plt.tight_layout()
+        
+        recall_path = output_dir / "per_class_recall.png"
+        plt.savefig(recall_path, dpi=150, bbox_inches="tight")
+        plt.close(fig)
+        logger.info(f"Per-class recall plot saved to {recall_path}")
+        
+        # 3. Feature importance
+        feature_importance = model.feature_importances_
+        importance_df = pd.DataFrame({
+            "feature": feature_cols,
+            "importance": feature_importance,
+        }).sort_values("importance", ascending=False)
+        
+        fig, ax = plt.subplots(figsize=(10, 8))
+        top_n = min(20, len(importance_df))
+        top_features = importance_df.head(top_n)
+        
+        ax.barh(range(top_n), top_features["importance"].values[::-1], color="#3b82f6", alpha=0.8)
+        ax.set_yticks(range(top_n))
+        ax.set_yticklabels(top_features["feature"].values[::-1])
+        ax.set_xlabel("Importance")
+        ax.set_title(f"Top {top_n} Feature Importances - Simple RF")
+        plt.tight_layout()
+        
+        fi_path = output_dir / "feature_importance.png"
+        plt.savefig(fi_path, dpi=150, bbox_inches="tight")
+        plt.close(fig)
+        logger.info(f"Feature importance plot saved to {fi_path}")
+        
+        # 4. Confidence distribution
+        max_proba = np.max(y_proba, axis=1)
+        
+        fig, ax = plt.subplots(figsize=(8, 5))
+        ax.hist(max_proba, bins=20, color="#3b82f6", edgecolor="black", alpha=0.7)
+        ax.axvline(x=0.5, color="red", linestyle="--", label="50% confidence")
+        ax.axvline(x=np.mean(max_proba), color="green", linestyle="--", label=f"Mean: {np.mean(max_proba):.2f}")
+        ax.set_xlabel("Prediction Confidence (max probability)")
+        ax.set_ylabel("Frequency")
+        ax.set_title("Prediction Confidence Distribution - Simple RF")
+        ax.legend()
+        plt.tight_layout()
+        
+        conf_path = output_dir / "confidence_distribution.png"
+        plt.savefig(conf_path, dpi=150, bbox_inches="tight")
+        plt.close(fig)
+        logger.info(f"Confidence distribution saved to {conf_path}")
+        
+        # 5. ROC curves (one-vs-rest)
+        fig, ax = plt.subplots(figsize=(8, 6))
+        colors = ["#3b82f6", "#f97316", "#22c55e"]
+        
+        for i, (cls_name, color) in enumerate(zip(CLASS_NAMES, colors)):
+            y_true_binary = (y_test == i).astype(int)
+            y_score = y_proba[:, i]
+            
+            if len(np.unique(y_true_binary)) < 2:
+                continue
+                
+            fpr, tpr, _ = roc_curve(y_true_binary, y_score)
+            auc = roc_auc_score(y_true_binary, y_score)
+            ax.plot(fpr, tpr, color=color, lw=2, label=f"{cls_name} (AUC = {auc:.3f})")
+        
+        ax.plot([0, 1], [0, 1], "k--", lw=1, label="Random")
+        ax.set_xlabel("False Positive Rate")
+        ax.set_ylabel("True Positive Rate")
+        ax.set_title("ROC Curves (One-vs-Rest) - Simple RF")
+        ax.legend(loc="lower right")
+        ax.grid(True, alpha=0.3)
+        plt.tight_layout()
+        
+        roc_path = output_dir / "roc_curves.png"
+        plt.savefig(roc_path, dpi=150, bbox_inches="tight")
+        plt.close(fig)
+        logger.info(f"ROC curves saved to {roc_path}")
+        
+    except ImportError as e:
+        logger.warning(f"Could not generate plots (missing dependencies): {e}")
+    except Exception as e:
+        logger.warning(f"Error generating plots: {e}")
+    
     # Save
-    save_model(model, encoders, feature_cols, metrics)
+    save_model(model, encoders, feature_cols, metrics, output_dir)
     
     logger.info(f"\n{'='*60}")
     logger.info("Training complete!")
-    logger.info(f"Model saved to: {OUTPUT_DIR}")
+    logger.info(f"Model saved to: {output_dir}")
     logger.info(f"{'='*60}")
+    
+    return metrics
 
 
 if __name__ == "__main__":
@@ -376,6 +579,37 @@ if __name__ == "__main__":
         default=42,
         help="Random seed",
     )
+    # Data source configuration flags
+    parser.add_argument(
+        "--include-vehicle",
+        action="store_true",
+        help="Include vehicle data (count, age, types, speed violations)",
+    )
+    parser.add_argument(
+        "--include-people",
+        action="store_true",
+        help="Include people data (demographics, BAC, safety equipment)",
+    )
+    parser.add_argument(
+        "--include-weather",
+        action="store_true",
+        help="Include weather data (temperature, humidity, rain, wind)",
+    )
+    parser.add_argument(
+        "--feature-filter",
+        type=str,
+        choices=["none", "drop-low", "drop-review"],
+        default="drop-low",
+        help="Feature filtering mode: 'none' (all features), 'drop-low' (drop DROP features), 'drop-review' (drop DROP + REVIEW). Default: drop-low",
+    )
     
     args = parser.parse_args()
-    main(sample_size=args.sample, random_state=args.seed)
+    
+    # Build data source configuration from CLI flags
+    config = DataSourceConfig(
+        use_vehicles=args.include_vehicle,
+        use_people=args.include_people,
+        use_weather=args.include_weather,
+    )
+    
+    main(sample_size=args.sample, random_state=args.seed, config=config, feature_filter=args.feature_filter)

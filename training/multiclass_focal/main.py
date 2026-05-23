@@ -47,7 +47,7 @@ from data_preparation.feature_engineering import (
     add_ordinal_severity,
     engineer_all_features,
 )
-from data_preparation.triple_merge import triple_merge
+from data_preparation.triple_merge import triple_merge, DataSourceConfig
 
 from training.multiclass_focal.losses import FocalLoss, LDAMLoss, get_loss_function
 from training.multiclass_focal.model import SeverityMLP, SeverityMLPConfig
@@ -66,15 +66,28 @@ from training.multiclass_focal.evaluation import (
     plot_confusion_matrix,
     SEVERITY_CLASS_ORDER,
 )
+from training.baselines import create_imbalance_baselines, print_dual_baseline_comparison
+from training.feature_selection import filter_by_importance
+from training.metrics_schema import export_model_vs_baselines_csv
+from utils.logging_config import setup_logging
+from utils.csv_filename_generator import generate_csv_filename
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s",
-)
-logger = logging.getLogger(__name__)
+logger = setup_logging(__name__)
 
-# Output directory
-OUTPUT_DIR = PROJECT_ROOT / "models" / "trained" / "multiclass_focal"
+# Base model name for output directory
+MODEL_NAME = "multiclass_focal"
+
+
+def get_output_dir(config: DataSourceConfig) -> Path:
+    """Get output directory based on data source configuration.
+    
+    Args:
+        config: Data source configuration specifying which datasets are included.
+        
+    Returns:
+        Path to model output directory.
+    """
+    return PROJECT_ROOT / "models" / "trained" / f"{MODEL_NAME}_{config.get_name_suffix()}"
 
 
 def stratified_sample_with_minority_boost(
@@ -492,6 +505,8 @@ def main(
     model_type: Literal["nn", "lgbm", "catboost", "all"] = "all",
     epochs: int = 50,
     seed: int = 42,
+    data_config: DataSourceConfig | None = None,
+    feature_filter: str = "drop-low",
 ) -> dict:
     """Main training pipeline.
 
@@ -501,18 +516,27 @@ def main(
         model_type: Model type to train ('nn', 'lgbm', 'catboost', 'all')
         epochs: Training epochs for neural network
         seed: Random seed
+        data_config: Data source configuration (default: crash only)
+        feature_filter: Feature filtering mode ('none', 'drop-low', 'drop-review')
 
     Returns:
         Dictionary of results for each model
     """
+    if data_config is None:
+        data_config = DataSourceConfig(use_vehicles=False, use_people=False, use_weather=False)
+    
+    output_dir = get_output_dir(data_config)
+    
     logger.info("=" * 60)
     logger.info("5-CLASS MULTICLASS SEVERITY CLASSIFICATION")
     logger.info(f"Loss: {loss_type}, Model: {model_type}")
+    logger.info(f"Data configuration: {data_config}")
+    logger.info(f"Output directory: {output_dir}")
     logger.info("=" * 60)
 
     # Load and prepare data
     logger.info("Loading data...")
-    df = triple_merge()
+    df = triple_merge(config=data_config, verbose=False)
     logger.info(f"Loaded {len(df)} samples")
 
     # Sample if requested
@@ -528,6 +552,17 @@ def main(
     # Prepare features
     logger.info("Preparing features...")
     X_df, feature_cols = prepare_features(df)
+    logger.info(f"Features before filter: {len(feature_cols)}")
+    
+    # Apply importance-based feature filtering if enabled
+    if feature_filter != "none":
+        X_df, feature_cols, filter_result = filter_by_importance(
+            X_df, feature_cols, mode=feature_filter
+        )
+        logger.info(f"Feature filter '{feature_filter}': {filter_result.n_original} -> {filter_result.n_kept} features")
+        if filter_result.dropped_features:
+            logger.info(f"Dropped features: {filter_result.dropped_features[:5]}{'...' if len(filter_result.dropped_features) > 5 else ''}")
+    
     logger.info(f"Using {len(feature_cols)} features")
 
     # Encode target
@@ -579,6 +614,15 @@ def main(
             loss_type=loss_type, epochs=epochs, device=device, seed=seed,
         )
         models["nn"] = model_nn
+
+        # Export training history to CSV with timestamp
+        if history:
+            output_dir.mkdir(parents=True, exist_ok=True)
+            history_df = pd.DataFrame(history)
+            history_filename = generate_csv_filename("training_history", f"nn_{loss_type}")
+            history_path = output_dir / history_filename
+            history_df.to_csv(history_path, index=False)
+            logger.info(f"Saved training history to {history_path}")
 
         # Evaluate
         probs = predict_proba(model_nn, X_test, "nn", device)
@@ -682,7 +726,7 @@ def main(
         import pickle
 
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+        output_dir.mkdir(parents=True, exist_ok=True)
 
         artifacts = {
             "model_type": model_type_key,
@@ -695,7 +739,7 @@ def main(
 
         # Save neural network
         if model_type_key == "nn":
-            model_path = OUTPUT_DIR / f"model_nn_{timestamp}.pt"
+            model_path = output_dir / f"model_nn_{timestamp}.pt"
             torch.save({
                 "model_state_dict": best_model.state_dict(),
                 "config": best_model.config,
@@ -703,38 +747,69 @@ def main(
             artifacts["model_path"] = str(model_path.name)
             logger.info(f"  Neural network saved to {model_path}")
         elif model_type_key == "lgbm":
-            model_path = OUTPUT_DIR / f"model_lgbm_{timestamp}.txt"
+            model_path = output_dir / f"model_lgbm_{timestamp}.txt"
             best_model.save_model(str(model_path))
             artifacts["model_path"] = str(model_path.name)
             logger.info(f"  LightGBM model saved to {model_path}")
         elif model_type_key == "catboost":
-            model_path = OUTPUT_DIR / f"model_catboost_{timestamp}.cbm"
+            model_path = output_dir / f"model_catboost_{timestamp}.cbm"
             best_model.save_model(str(model_path))
             artifacts["model_path"] = str(model_path.name)
             logger.info(f"  CatBoost model saved to {model_path}")
 
         # Save calibrator
-        calibrator_path = OUTPUT_DIR / f"calibrator_{timestamp}.pkl"
+        calibrator_path = output_dir / f"calibrator_{timestamp}.pkl"
         with open(calibrator_path, "wb") as f:
             pickle.dump(calibrator, f)
         artifacts["calibrator_path"] = str(calibrator_path.name)
         logger.info(f"  Calibrator saved to {calibrator_path}")
 
         # Save artifacts metadata
-        artifacts_path = OUTPUT_DIR / f"artifacts_{timestamp}.json"
+        artifacts_path = output_dir / f"artifacts_{timestamp}.json"
         with open(artifacts_path, "w") as f:
             json.dump(artifacts, f, indent=2)
         logger.info(f"  Artifacts metadata saved to {artifacts_path}")
 
     # Save results
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    output_dir.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-    results_path = OUTPUT_DIR / f"results_{timestamp}.json"
+    results_path = output_dir / f"results_{timestamp}.json"
     results_dict = {name: r.to_dict() for name, r in results.items()}
     with open(results_path, "w") as f:
         json.dump(results_dict, f, indent=2)
     logger.info(f"\nResults saved to {results_path}")
+
+    # Baseline comparison (using best model)
+    if results:
+        best_name = max(results.keys(), key=lambda k: results[k].macro_f1)
+        best_result = results[best_name]
+        
+        baseline = create_imbalance_baselines()
+        baseline.fit(y_train)
+        baseline_results = baseline.evaluate(y_test, class_names=SEVERITY_CLASS_ORDER)
+        
+        model_metrics = {
+            "accuracy": best_result.accuracy,
+            "f1_macro": best_result.macro_f1,
+            "f1_weighted": best_result.weighted_f1,
+        }
+        
+        print_dual_baseline_comparison(
+            model_metrics=model_metrics,
+            baseline_results=baseline_results,
+            model_name=best_name,
+            primary_metric="f1_macro",
+        )
+        
+        # Export baseline comparison CSV
+        export_model_vs_baselines_csv(
+            model_name=f"focal_{best_name}",
+            model_metrics=model_metrics,
+            baseline_results=baseline_results,
+            output_dir=output_dir,
+        )
+        logger.info(f"Saved timestamped baseline comparison to {output_dir}")
 
     return results
 
@@ -761,8 +836,38 @@ if __name__ == "__main__":
         "--seed", type=int, default=42,
         help="Random seed"
     )
+    # Data source configuration flags
+    parser.add_argument(
+        "--include-vehicle",
+        action="store_true",
+        help="Include vehicle data (count, age, types, speed violations)",
+    )
+    parser.add_argument(
+        "--include-people",
+        action="store_true",
+        help="Include people data (demographics, BAC, safety equipment)",
+    )
+    parser.add_argument(
+        "--include-weather",
+        action="store_true",
+        help="Include weather data (temperature, humidity, rain, wind)",
+    )
+    parser.add_argument(
+        "--feature-filter",
+        type=str,
+        choices=["none", "drop-low", "drop-review"],
+        default="drop-low",
+        help="Feature filtering mode: 'none' (all features), 'drop-low' (drop DROP features), 'drop-review' (drop DROP + REVIEW). Default: drop-low",
+    )
 
     args = parser.parse_args()
+    
+    # Build data source configuration from CLI flags
+    data_config = DataSourceConfig(
+        use_vehicles=args.include_vehicle,
+        use_people=args.include_people,
+        use_weather=args.include_weather,
+    )
 
     main(
         sample_size=args.sample,
@@ -770,4 +875,6 @@ if __name__ == "__main__":
         model_type=args.model,
         epochs=args.epochs,
         seed=args.seed,
+        data_config=data_config,
+        feature_filter=args.feature_filter,
     )

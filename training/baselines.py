@@ -576,20 +576,20 @@ def print_baseline_comparison_box(
     total_width = 68
     
     # Print header
-    print()
-    print(f"{TL}{H * (total_width - 2)}{TR}")
+    logger.info("")
+    logger.info(f"{TL}{H * (total_width - 2)}{TR}")
     
     title = f"MODEL VS BASELINE COMPARISON ({baseline_strategy.upper()})"
     padding = (total_width - 2 - len(title)) // 2
-    print(f"{V}{' ' * padding}{title}{' ' * (total_width - 2 - padding - len(title))}{V}")
+    logger.info(f"{V}{' ' * padding}{title}{' ' * (total_width - 2 - padding - len(title))}{V}")
     
-    print(f"{LT}{H * (total_width - 2)}{RT}")
+    logger.info(f"{LT}{H * (total_width - 2)}{RT}")
     
     # Column headers
     header = f"{V}  {'Metric':<{label_width}} {VL} {'Model':^8} {VL} {'Baseline':^8} {VL} {'Change':^10} {VL} {'Winner':^8} {V}"
-    print(header)
+    logger.info(header)
     
-    print(f"{LT}{HL * (label_width + 2)}{X}{HL * 10}{X}{HL * 10}{X}{HL * 12}{X}{HL * 10}{RT}")
+    logger.info(f"{LT}{HL * (label_width + 2)}{X}{HL * 10}{X}{HL * 10}{X}{HL * 12}{X}{HL * 10}{RT}")
     
     # Data rows
     for row in rows:
@@ -597,24 +597,24 @@ def print_baseline_comparison_box(
         baseline_str = f"{row['baseline']:.4f}" if isinstance(row['baseline'], float) else str(row['baseline'])
         
         line = f"{V}  {row['label']:<{label_width}} {VL} {model_str:^8} {VL} {baseline_str:^8} {VL} {row['improvement']:^10} {VL} {row['winner']:^8} {V}"
-        print(line)
+        logger.info(line)
     
     # Footer
-    print(f"{LT}{H * (total_width - 2)}{RT}")
+    logger.info(f"{LT}{H * (total_width - 2)}{RT}")
     
     # Primary metric note
     if primary_metric:
         note = "★ = Primary metric for this task"
-        print(f"{V}  {note:<{total_width - 4}}{V}")
+        logger.info(f"{V}  {note:<{total_width - 4}}{V}")
     
     # Summary
     if total > 0:
         result = "MODEL WINS" if wins > total / 2 else "BASELINE WINS"
         summary = f"Result: {result} on {wins}/{total} metrics"
-        print(f"{V}  {summary:<{total_width - 4}}{V}")
+        logger.info(f"{V}  {summary:<{total_width - 4}}{V}")
     
-    print(f"{BL}{H * (total_width - 2)}{BR}")
-    print()
+    logger.info(f"{BL}{H * (total_width - 2)}{BR}")
+    logger.info("")
 
 
 def add_baseline_args(parser: "argparse.ArgumentParser") -> None:
@@ -690,13 +690,13 @@ def print_dual_baseline_comparison(
     biased_flip = baseline_results.get("biased_coin_flip")
 
     if not coin_flip or not biased_flip:
-        print("Warning: Both coin_flip and biased_coin_flip baselines required")
+        logger.warning("Both coin_flip and biased_coin_flip baselines required")
         return
 
     metrics_to_show = [m for m in model_metrics.keys() if m in coin_flip.metrics]
 
     if not metrics_to_show:
-        print("Warning: No common metrics found between model and baselines")
+        logger.warning("No common metrics found between model and baselines")
         return
 
     # Box characters
@@ -706,18 +706,18 @@ def print_dual_baseline_comparison(
 
     total_width = 82
 
-    print()
-    print(f"{TL}{H * (total_width - 2)}{TR}")
+    logger.info("")
+    logger.info(f"{TL}{H * (total_width - 2)}{TR}")
     title = "MODEL VS BASELINES COMPARISON"
     padding = (total_width - 2 - len(title)) // 2
-    print(f"{V}{' ' * padding}{title}{' ' * (total_width - 2 - padding - len(title))}{V}")
-    print(f"{LT}{H * (total_width - 2)}{RT}")
+    logger.info(f"{V}{' ' * padding}{title}{' ' * (total_width - 2 - padding - len(title))}{V}")
+    logger.info(f"{LT}{H * (total_width - 2)}{RT}")
 
     # Truncate model name if too long
     display_name = model_name[:10] if len(model_name) > 10 else model_name
     header = f"{V}  {'Metric':<14} {VL} {display_name:^10} {VL} {'Coin Flip':^10} {VL} {'Biased CF':^10} {VL} {'vs CF':^8} {VL} {'vs Bias':^8} {V}"
-    print(header)
-    print(f"{LT}{HL * 16}{X}{HL * 12}{X}{HL * 12}{X}{HL * 12}{X}{HL * 10}{X}{HL * 10}{RT}")
+    logger.info(header)
+    logger.info(f"{LT}{HL * 16}{X}{HL * 12}{X}{HL * 12}{X}{HL * 12}{X}{HL * 10}{X}{HL * 10}{RT}")
 
     wins_vs_coin = 0
     wins_vs_biased = 0
@@ -751,15 +751,15 @@ def print_dual_baseline_comparison(
 
         label = f"{metric} ★" if metric == primary_metric else metric
         line = f"{V}  {label:<14} {VL} {model_val:^10.4f} {VL} {coin_val:^10.4f} {VL} {biased_val:^10.4f} {VL} {vs_coin_str:^8} {VL} {vs_biased_str:^8} {V}"
-        print(line)
+        logger.info(line)
 
-    print(f"{LT}{H * (total_width - 2)}{RT}")
+    logger.info(f"{LT}{H * (total_width - 2)}{RT}")
     if primary_metric:
-        print(f"{V}  {'★ = Primary metric':<{total_width - 4}}{V}")
+        logger.info(f"{V}  {'★ = Primary metric':<{total_width - 4}}{V}")
 
     coin_result = "✓ BEATS" if wins_vs_coin == total else f"✗ {wins_vs_coin}/{total}"
     biased_result = "✓ BEATS" if wins_vs_biased == total else f"✗ {wins_vs_biased}/{total}"
     summary = f"vs Coin Flip: {coin_result}  |  vs Biased: {biased_result}"
-    print(f"{V}  {summary:<{total_width - 4}}{V}")
-    print(f"{BL}{H * (total_width - 2)}{BR}")
-    print()
+    logger.info(f"{V}  {summary:<{total_width - 4}}{V}")
+    logger.info(f"{BL}{H * (total_width - 2)}{BR}")
+    logger.info("")

@@ -13,7 +13,14 @@ import logging
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
-from api.config import MODEL_REGISTRY, DEFAULT_MODEL, FEATURE_OPTIONS, MODELS_DIR
+from api.config import (
+    MODEL_REGISTRY,
+    DEFAULT_MODEL,
+    FEATURE_OPTIONS,
+    MODELS_DIR,
+    get_all_possible_models,
+    refresh_model_registry,
+)
 from api.models import (
     PredictionRequest,
     PredictionResponse,
@@ -40,6 +47,9 @@ from api.models import (
     RocComparisonResponse,
     ModelComparisonResponse,
     ModelComparisonResult,
+    AvailableModelInfo,
+    AvailableModelsResponse,
+    DatasetConfigResponse,
 )
 from api.prediction import (
     predict,
@@ -57,11 +67,17 @@ from api.accuracy_service import (
     get_all_models_roc_data,
 )
 from api.chicago_client import ChicagoAPIError
+from api.middleware import setup_middleware, setup_request_context_logging
+from api.metrics import metrics_router
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s",
 )
+logger = logging.getLogger(__name__)
+
+# Add request context to all log messages
+setup_request_context_logging()
 logger = logging.getLogger(__name__)
 
 
@@ -99,6 +115,12 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Add observability middleware (request ID, logging, latency tracking)
+setup_middleware(app)
+
+# Include metrics endpoints
+app.include_router(metrics_router)
 
 
 @app.get("/", tags=["Root"])
@@ -246,21 +268,74 @@ async def get_feature_options():
     return FeatureOptionsResponse(**FEATURE_OPTIONS)
 
 
-@app.get("/api/models", response_model=list[ModelInfoResponse], tags=["Models"])
-async def list_models():
-    """List available prediction models.
+@app.get("/api/models", response_model=AvailableModelsResponse, tags=["Models"])
+async def list_models(include_unavailable: bool = False):
+    """List available prediction models with dataset configuration.
 
-    Returns information about all models in the registry.
-    This endpoint supports future model selection functionality.
+    Returns information about all models including which datasets they were
+    trained with. Can optionally include unavailable (not-yet-trained) models.
+
+    Args:
+        include_unavailable: If True, includes all possible model combinations
+                           even if not trained yet (marked as is_available=False).
+                           Default False returns only trained models.
+
+    Returns:
+        AvailableModelsResponse with list of models and their configurations.
     """
-    return [
-        ModelInfoResponse(
-            name=info.name,
-            description=info.description,
-            model_type=info.model_type,
+    # Get models based on flag
+    if include_unavailable:
+        all_models = get_all_possible_models()
+    else:
+        all_models = MODEL_REGISTRY
+
+    models = []
+    available_count = 0
+
+    for key, info in sorted(all_models.items()):
+        # Build dataset config response
+        datasets = DatasetConfigResponse(
+            use_vehicles=info.datasets.use_vehicles,
+            use_people=info.datasets.use_people,
+            use_weather=info.datasets.use_weather,
+            suffix=info.datasets.get_suffix(),
+            display_name=info.datasets.get_display_name(),
         )
-        for info in MODEL_REGISTRY.values()
-    ]
+
+        models.append(
+            AvailableModelInfo(
+                key=key,
+                name=info.name,
+                description=info.description,
+                model_type=info.model_type,
+                datasets=datasets,
+                is_available=info.is_available,
+            )
+        )
+
+        if info.is_available:
+            available_count += 1
+
+    return AvailableModelsResponse(
+        models=models,
+        available_count=available_count,
+        total_count=len(models),
+        dataset_combinations=8,
+    )
+
+
+@app.post("/api/models/refresh", tags=["Models"])
+async def refresh_models():
+    """Refresh the model registry by re-scanning the models directory.
+
+    Call this after training new models to make them available for selection.
+    """
+    refresh_model_registry()
+    return {
+        "status": "success",
+        "message": f"Model registry refreshed: {len(MODEL_REGISTRY)} models found",
+        "models": list(MODEL_REGISTRY.keys()),
+    }
 
 
 # ============================================================================

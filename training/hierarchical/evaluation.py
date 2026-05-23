@@ -372,3 +372,300 @@ def export_roc_data(
     logger.info(f"ROC data exported to {save_path}")
 
     return data
+
+
+def plot_confusion_matrix_heatmap(
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
+    class_names: list[str],
+    save_path: str | Path,
+    title: str = "Confusion Matrix",
+    normalize: bool = True,
+) -> None:
+    """Plot confusion matrix as a heatmap.
+
+    Args:
+        y_true: True labels.
+        y_pred: Predicted labels.
+        class_names: List of class names.
+        save_path: Path to save the plot.
+        title: Plot title.
+        normalize: Whether to normalize by row (true class).
+    """
+    try:
+        import matplotlib.pyplot as plt
+        import seaborn as sns
+    except ImportError:
+        logger.warning("matplotlib/seaborn not available, skipping confusion matrix plot")
+        return
+
+    cm = confusion_matrix(y_true, y_pred)
+    
+    if normalize:
+        cm_display = cm.astype(float) / cm.sum(axis=1, keepdims=True)
+        cm_display = np.nan_to_num(cm_display)
+        fmt = ".2%"
+    else:
+        cm_display = cm
+        fmt = "d"
+
+    fig, ax = plt.subplots(figsize=(10, 8))
+    sns.heatmap(
+        cm_display,
+        annot=True,
+        fmt=fmt,
+        cmap="Blues",
+        xticklabels=class_names,
+        yticklabels=class_names,
+        ax=ax,
+        cbar_kws={"label": "Proportion" if normalize else "Count"},
+    )
+    
+    ax.set_xlabel("Predicted", fontsize=12)
+    ax.set_ylabel("True", fontsize=12)
+    ax.set_title(title, fontsize=14)
+    plt.xticks(rotation=45, ha="right")
+    plt.yticks(rotation=0)
+    plt.tight_layout()
+
+    save_path = Path(save_path)
+    save_path.parent.mkdir(parents=True, exist_ok=True)
+    plt.savefig(save_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+    logger.info(f"Confusion matrix heatmap saved to {save_path}")
+
+
+def plot_per_class_recall(
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
+    class_names: list[str],
+    save_path: str | Path,
+    title: str = "Per-Class Recall",
+) -> dict[str, float]:
+    """Plot per-class recall as a horizontal bar chart.
+
+    Args:
+        y_true: True labels.
+        y_pred: Predicted labels.
+        class_names: List of class names.
+        save_path: Path to save the plot.
+        title: Plot title.
+
+    Returns:
+        Dictionary mapping class name to recall value.
+    """
+    try:
+        import matplotlib.pyplot as plt
+    except ImportError:
+        logger.warning("matplotlib not available, skipping recall plot")
+        return {}
+
+    recalls = {}
+    for i, cls_name in enumerate(class_names):
+        mask = y_true == i
+        if mask.sum() > 0:
+            correct = ((y_true == i) & (y_pred == i)).sum()
+            recalls[cls_name] = correct / mask.sum()
+        else:
+            recalls[cls_name] = 0.0
+
+    fig, ax = plt.subplots(figsize=(10, 6))
+    
+    y_pos = np.arange(len(class_names))
+    recall_values = [recalls[cls] for cls in class_names]
+    
+    colors = ["#22c55e" if r >= 0.5 else "#f97316" if r >= 0.3 else "#ef4444" for r in recall_values]
+    
+    bars = ax.barh(y_pos, recall_values, color=colors, edgecolor="black", alpha=0.8)
+    
+    # Add value labels
+    for bar, val in zip(bars, recall_values):
+        ax.text(
+            bar.get_width() + 0.02,
+            bar.get_y() + bar.get_height() / 2,
+            f"{val:.1%}",
+            va="center",
+            fontsize=10,
+        )
+    
+    ax.set_yticks(y_pos)
+    ax.set_yticklabels(class_names)
+    ax.set_xlabel("Recall", fontsize=12)
+    ax.set_title(title, fontsize=14)
+    ax.set_xlim(0, 1.1)
+    ax.axvline(x=0.5, color="gray", linestyle="--", alpha=0.5, label="50% threshold")
+    ax.grid(axis="x", alpha=0.3)
+    
+    plt.tight_layout()
+
+    save_path = Path(save_path)
+    save_path.parent.mkdir(parents=True, exist_ok=True)
+    plt.savefig(save_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+    logger.info(f"Per-class recall plot saved to {save_path}")
+
+    return recalls
+
+
+def generate_all_evaluation_plots(
+    clf: HierarchicalClassifierBase,
+    X_test: np.ndarray,
+    targets: HierarchicalTargets,
+    output_dir: str | Path,
+    model_name: str = "hierarchical",
+) -> dict:
+    """Generate all evaluation plots for a hierarchical classifier.
+
+    This is the main entry point for comprehensive evaluation visualization.
+    Generates:
+    - ROC curves for each level
+    - Confusion matrix heatmap
+    - Per-class recall bar chart
+    - Calibration curves (if probability estimates available)
+    - Confidence distribution histogram
+
+    Args:
+        clf: Trained hierarchical classifier.
+        X_test: Test feature matrix.
+        targets: HierarchicalTargets for test set.
+        output_dir: Directory to save all plots.
+        model_name: Name of the model for titles/filenames.
+
+    Returns:
+        Dictionary of generated file paths and metrics.
+    """
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    
+    results = {"plots": [], "metrics": {}}
+    
+    logger.info(f"Generating evaluation plots in {output_dir}")
+
+    # Get predictions
+    l1_pred, l2_pred, l25_pred, l3_pred = clf.predict_binary(X_test)
+    l1_proba, l2_proba, l25_proba, l3_proba = clf.predict_proba(X_test)
+    y_pred_multi = clf.predict_multiclass(X_test, label_encoder=targets.label_encoder)
+
+    class_names = list(targets.label_encoder.classes_)
+
+    # 1. ROC Curves
+    injury_mask = targets.y_injury == 1
+    severe_mask = (targets.y_injury == 1) & (targets.y_severe == 1)
+    minor_mask = (targets.y_injury == 1) & (targets.y_severe == 0)
+
+    y_true_levels = {"L1 (INJURY)": targets.y_injury}
+    y_proba_levels = {"L1 (INJURY)": l1_proba}
+
+    if np.sum(injury_mask) > 0:
+        y_true_levels["L2 (SEVERE)"] = targets.y_severe[injury_mask]
+        y_proba_levels["L2 (SEVERE)"] = l2_proba[injury_mask]
+
+    if np.sum(severe_mask) > 0:
+        y_true_levels["L2.5 (FATAL)"] = targets.y_fatal[severe_mask]
+        y_proba_levels["L2.5 (FATAL)"] = l25_proba[severe_mask]
+
+    if np.sum(minor_mask) > 0:
+        y_true_levels["L3 (REPORTED)"] = targets.y_reported[minor_mask]
+        y_proba_levels["L3 (REPORTED)"] = l3_proba[minor_mask]
+
+    roc_path = output_dir / f"{model_name}_roc_curves.png"
+    auc_scores = plot_roc_curves(
+        y_true_levels, y_proba_levels, roc_path,
+        title=f"ROC Curves - {model_name}",
+    )
+    results["plots"].append(str(roc_path))
+    results["metrics"]["auc_scores"] = auc_scores
+
+    # Export ROC data for frontend
+    roc_json_path = output_dir / f"{model_name}_roc_data.json"
+    export_roc_data(
+        y_true_levels, y_proba_levels, roc_json_path,
+        model_name=model_name,
+    )
+    results["plots"].append(str(roc_json_path))
+
+    # 2. Confusion Matrix
+    cm_path = output_dir / f"{model_name}_confusion_matrix.png"
+    plot_confusion_matrix_heatmap(
+        targets.y_original, y_pred_multi, class_names, cm_path,
+        title=f"Confusion Matrix - {model_name}",
+    )
+    results["plots"].append(str(cm_path))
+
+    # 3. Per-class Recall
+    recall_path = output_dir / f"{model_name}_per_class_recall.png"
+    recalls = plot_per_class_recall(
+        targets.y_original, y_pred_multi, class_names, recall_path,
+        title=f"Per-Class Recall - {model_name}",
+    )
+    results["metrics"]["recalls"] = recalls
+    results["plots"].append(str(recall_path))
+
+    # 4. Calibration Curves (using plotting module)
+    try:
+        from training.plotting.calibration import plot_calibration_curve
+        
+        # L1 calibration (most important - injury detection)
+        cal_path = output_dir / f"{model_name}_calibration_L1.png"
+        plot_calibration_curve(
+            targets.y_injury, l1_proba, cal_path,
+            title=f"Calibration - L1 Injury Detection ({model_name})",
+        )
+        results["plots"].append(str(cal_path))
+
+        # L2 calibration (severity)
+        if np.sum(injury_mask) > 0:
+            cal_path_l2 = output_dir / f"{model_name}_calibration_L2.png"
+            plot_calibration_curve(
+                targets.y_severe[injury_mask], l2_proba[injury_mask], cal_path_l2,
+                title=f"Calibration - L2 Severity ({model_name})",
+            )
+            results["plots"].append(str(cal_path_l2))
+    except ImportError:
+        logger.warning("Calibration plotting module not available")
+
+    # 5. Confidence Distribution
+    try:
+        from training.plotting.confidence import plot_confidence_histogram
+        
+        # Get max probability for each prediction
+        all_proba = np.column_stack([
+            1 - l1_proba,  # NO_INJURY prob
+            l1_proba * (1 - l2_proba),  # MINOR prob (simplified)
+            l1_proba * l2_proba,  # SEVERE prob (simplified)
+        ])
+        max_conf = np.max(all_proba, axis=1)
+        
+        conf_path = output_dir / f"{model_name}_confidence_distribution.png"
+        plot_confidence_histogram(
+            max_conf, conf_path,
+            title=f"Prediction Confidence Distribution - {model_name}",
+        )
+        results["plots"].append(str(conf_path))
+    except ImportError:
+        logger.warning("Confidence plotting module not available")
+
+    # 6. Export metrics summary as JSON
+    metrics_path = output_dir / f"{model_name}_metrics_summary.json"
+    metrics_summary = {
+        "model_name": model_name,
+        "generated_at": datetime.now().isoformat(),
+        "auc_scores": {k: round(v, 4) for k, v in auc_scores.items()},
+        "recalls": {k: round(v, 4) for k, v in recalls.items()},
+        "n_test_samples": len(targets.y_original),
+        "class_distribution": {
+            cls: int((targets.y_original == i).sum())
+            for i, cls in enumerate(class_names)
+        },
+    }
+    
+    with open(metrics_path, "w") as f:
+        json.dump(metrics_summary, f, indent=2)
+    
+    results["plots"].append(str(metrics_path))
+
+    logger.info(f"Generated {len(results['plots'])} evaluation artifacts in {output_dir}")
+
+    return results
