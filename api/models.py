@@ -380,7 +380,7 @@ class PredictionWithActual(BaseModel):
     weather_condition: str | None = None
     lighting_condition: str | None = None
     first_crash_type: str | None = None
-    posted_speed_limit: str | None = None
+    posted_speed_limit: int | None = None
 
 
 class AccuracyResponse(BaseModel):
@@ -487,7 +487,6 @@ class ModelComparisonResponse(BaseModel):
     time_range_days: int = Field(description="Time range used for evaluation")
     max_crashes: int = Field(description="Max crashes evaluated per model")
     computed_at: datetime = Field(description="When comparison was computed")
-<<<<<<< HEAD
 
 
 # ============================================================================
@@ -533,5 +532,3 @@ class AvailableModelsResponse(BaseModel):
     dataset_combinations: int = Field(
         default=8, description="Number of dataset combinations (2^3)"
     )
-=======
->>>>>>> origin/dev

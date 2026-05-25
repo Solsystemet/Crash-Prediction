@@ -43,11 +43,7 @@ from data_preparation.feature_engineering import (
     add_ordinal_severity,
     engineer_all_features,
 )
-<<<<<<< HEAD
 from data_preparation.triple_merge import triple_merge, DataSourceConfig
-=======
-from data_preparation.triple_merge import triple_merge
->>>>>>> origin/dev
 
 # Import hierarchical classification package
 from training.hierarchical import (
@@ -60,15 +56,11 @@ from training.hierarchical import (
     prepare_hierarchical_targets,
     evaluate_hierarchical,
 )
-<<<<<<< HEAD
 from training.hierarchical.evaluation import (
     plot_roc_curves,
     export_roc_data,
     generate_all_evaluation_plots,
 )
-=======
-from training.hierarchical.evaluation import plot_roc_curves, export_roc_data
->>>>>>> origin/dev
 from training.hierarchical.tree_classifier import save_hierarchical_model
 from training.feature_selection import filter_by_importance
 from training.baselines import (
@@ -78,7 +70,6 @@ from training.baselines import (
     print_baseline_comparison_box,
     add_baseline_args,
 )
-<<<<<<< HEAD
 from training.metrics_schema import export_model_vs_baselines_csv
 from utils.logging_config import setup_logging
 
@@ -98,14 +89,6 @@ def get_output_dir(config: DataSourceConfig) -> Path:
         Path to model output directory.
     """
     return PROJECT_ROOT / "models" / "trained" / f"{MODEL_NAME}_{config.get_name_suffix()}"
-=======
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s",
-)
-logger = logging.getLogger(__name__)
->>>>>>> origin/dev
 
 
 def stratified_sample_with_fatal(
@@ -252,42 +235,16 @@ def run_hierarchical_pipeline(
     sample_size: int | None = None,
     feature_filter: str = "drop-low",
     with_baseline: bool = True,
-<<<<<<< HEAD
     data_config: DataSourceConfig | None = None,
-=======
->>>>>>> origin/dev
-) -> dict:
-    """Run the full hierarchical classification pipeline.
-
-    Args:
-        model_type: Which classifier to use ('tree' or 'neural').
-        sample_size: Optional limit on dataset size for faster experimentation.
-        feature_filter: Feature filtering mode ("none" or "drop-low").
-<<<<<<< HEAD
-        data_config: Data source configuration (default: crash only).
-=======
->>>>>>> origin/dev
 
     Returns:
         Dictionary of evaluation results.
     """
-<<<<<<< HEAD
     if data_config is None:
         data_config = DataSourceConfig(use_vehicles=False, use_people=False, use_weather=False)
     
     output_dir = get_output_dir(data_config)
     
-=======
->>>>>>> origin/dev
-    logger.info("=" * 60)
-    logger.info("HIERARCHICAL CLASSIFICATION PIPELINE")
-    logger.info("=" * 60)
-    logger.info(f"Model type: {model_type}")
-<<<<<<< HEAD
-    logger.info(f"Data configuration: {data_config}")
-    logger.info(f"Output directory: {output_dir}")
-=======
->>>>>>> origin/dev
 
     # Create config based on model type
     if model_type == "tree":
@@ -299,11 +256,7 @@ def run_hierarchical_pipeline(
 
     # Load and merge data
     logger.info("\n[1/6] Loading and merging data...")
-<<<<<<< HEAD
     df = triple_merge(config=data_config, verbose=False)
-=======
-    df = triple_merge()
->>>>>>> origin/dev
     logger.info(f"Merged dataset shape: {df.shape}")
 
     # Sample if specified - use stratified sampling to ensure FATAL representation
@@ -453,7 +406,6 @@ def run_hierarchical_pipeline(
         }
         results["baseline_comparison"] = comparison
 
-<<<<<<< HEAD
         # Export baseline comparison CSV
         export_model_vs_baselines_csv(
             model_name="hierarchical_5class",
@@ -463,73 +415,6 @@ def run_hierarchical_pipeline(
         )
         logger.info(f"Saved timestamped baseline comparison to {output_dir}")
 
-=======
->>>>>>> origin/dev
-    # Summary
-    logger.info("\n" + "=" * 60)
-    logger.info("SUMMARY")
-    logger.info("=" * 60)
-
-    logger.info(f"Multiclass Accuracy: {results.get('mc_accuracy', 0):.4f}")
-    logger.info(f"Macro F1: {results.get('mc_f1_macro', 0):.4f}")
-    logger.info(f"Micro F1: {results.get('mc_f1_micro', 0):.4f}")
-
-    target_metrics = ["recall_FATAL", "recall_INCAPACITATING INJURY"]
-    for metric in target_metrics:
-        if metric in results:
-            old_val = 0.043 if "FATAL" in metric else 0.129
-            new_val = results[metric]
-            improvement = (new_val - old_val) / old_val * 100 if old_val > 0 else 0
-            logger.info(f"{metric}: {new_val:.4f} (was {old_val:.4f}, {improvement:+.1f}%)")
-
-    # Generate ROC curves
-    logger.info("\nGenerating ROC curves...")
-    plots_dir = PROJECT_ROOT / "models" / "plots"
-    plots_dir.mkdir(parents=True, exist_ok=True)
-
-    # Get probabilities for ROC (4-level hierarchical)
-    l1_proba, l2_proba, l25_proba, l3_proba = clf.predict_proba(X_test)
-
-    y_true_levels = {
-        "L1 (INJURY vs NO_INJURY)": targets_test.y_injury,
-    }
-    y_proba_levels = {
-        "L1 (INJURY vs NO_INJURY)": l1_proba,
-    }
-
-    # L2: SEVERE vs MINOR (injury cases only)
-    injury_mask = targets_test.y_injury == 1
-    if np.sum(injury_mask) > 0:
-        y_true_levels["L2 (SEVERE vs MINOR)"] = targets_test.y_severe[injury_mask]
-        y_proba_levels["L2 (SEVERE vs MINOR)"] = l2_proba[injury_mask]
-
-    # L2.5: FATAL vs INCAPACITATING (severe cases only)
-    severe_mask = (targets_test.y_injury == 1) & (targets_test.y_severe == 1)
-    if np.sum(severe_mask) > 0:
-        y_true_levels["L2.5 (FATAL vs INCAP)"] = targets_test.y_fatal[severe_mask]
-        y_proba_levels["L2.5 (FATAL vs INCAP)"] = l25_proba[severe_mask]
-
-    # L3: REPORTED vs VISIBLE (minor injury cases only)
-    minor_mask = (targets_test.y_injury == 1) & (targets_test.y_severe == 0)
-    if np.sum(minor_mask) > 0:
-        y_true_levels["L3 (REPORTED vs VISIBLE)"] = targets_test.y_reported[minor_mask]
-        y_proba_levels["L3 (REPORTED vs VISIBLE)"] = l3_proba[minor_mask]
-
-    roc_path = plots_dir / "roc_curves_hierarchical.png"
-    auc_scores = plot_roc_curves(
-        y_true_levels=y_true_levels,
-        y_proba_levels=y_proba_levels,
-        save_path=roc_path,
-        title="ROC Curves - Hierarchical 5-Class Classifier",
-    )
-
-    # Export ROC data as JSON for frontend visualization
-<<<<<<< HEAD
-    roc_json_path = output_dir / "roc_data.json"
-=======
-    model_dir = PROJECT_ROOT / "models" / "trained" / "hierarchical_5class"
-    roc_json_path = model_dir / "roc_data.json"
->>>>>>> origin/dev
     export_roc_data(
         y_true_levels=y_true_levels,
         y_proba_levels=y_proba_levels,
@@ -542,7 +427,6 @@ def run_hierarchical_pipeline(
         logger.info(f"  {level_name}: AUC = {auc:.4f}")
         results[f"auc_{level_name}"] = auc
 
-<<<<<<< HEAD
     # Generate comprehensive evaluation plots
     logger.info("\nGenerating comprehensive evaluation plots...")
     try:
@@ -561,13 +445,6 @@ def run_hierarchical_pipeline(
     if model_type == "tree":
         save_hierarchical_model(clf, str(output_dir))
         logger.info(f"Model saved to {output_dir}")
-=======
-    # Save model (only for tree-based classifiers)
-    if model_type == "tree":
-        model_dir = PROJECT_ROOT / "models" / "trained" / "hierarchical_5class"
-        save_hierarchical_model(clf, str(model_dir))
-        logger.info(f"Model saved to {model_dir}")
->>>>>>> origin/dev
 
     return results
 
@@ -597,7 +474,6 @@ if __name__ == "__main__":
         help="Feature filtering mode: 'none' (all features), 'drop-low' (drop DROP features), 'drop-review' (drop DROP + REVIEW features). Default: drop-low",
     )
     add_baseline_args(parser)
-<<<<<<< HEAD
     # Data source configuration flags
     parser.add_argument(
         "--include-vehicle",
@@ -623,20 +499,13 @@ if __name__ == "__main__":
         use_people=args.include_people,
         use_weather=args.include_weather,
     )
-=======
-
-    args = parser.parse_args()
->>>>>>> origin/dev
 
     results = run_hierarchical_pipeline(
         model_type=args.model,
         sample_size=args.sample,
         feature_filter=args.feature_filter,
         with_baseline=not args.no_baseline,
-<<<<<<< HEAD
         data_config=data_config,
-=======
->>>>>>> origin/dev
     )
 
     # Print final summary

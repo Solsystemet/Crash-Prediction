@@ -4,19 +4,7 @@ This module provides high-level functions for preparing data,
 with optional caching of processed tensor data.
 """
 
-<<<<<<< HEAD
 import logging
-=======
->>>>>>> origin/dev
-from pathlib import Path
-
-from data_preparation.prepare_tensor_data import TensorPipelineResult, prepare_tensor_data
-from data_preparation.tensor_config import SEVERITY_PREDICTION_CONFIG, TensorConfig
-
-<<<<<<< HEAD
-logger = logging.getLogger(__name__)
-=======
->>>>>>> origin/dev
 
 CACHE_DIR = Path(__file__).resolve().parent.parent / "data" / "processed"
 
@@ -44,29 +32,17 @@ def prepare_data(
 
     # Try to load from cache
     if use_cache and cache_path.exists():
-<<<<<<< HEAD
         logger.info(f"Loading cached tensor data from {cache_path}")
         return TensorPipelineResult.load(cache_path)
 
     # Prepare fresh data
     logger.info("Preparing tensor data from CSV...")
-=======
-        print(f"Loading cached tensor data from {cache_path}")
-        return TensorPipelineResult.load(cache_path)
-
-    # Prepare fresh data
-    print("Preparing tensor data from CSV...")
->>>>>>> origin/dev
     result = prepare_tensor_data(config)
 
     # Save to cache
     if use_cache:
         CACHE_DIR.mkdir(parents=True, exist_ok=True)
         result.save(cache_path)
-<<<<<<< HEAD
         logger.info(f"Cached tensor data to {cache_path}")
-=======
-        print(f"Cached tensor data to {cache_path}")
->>>>>>> origin/dev
 
     return result

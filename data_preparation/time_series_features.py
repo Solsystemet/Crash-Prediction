@@ -6,23 +6,7 @@ time encodings for temporal regression models.
 
 from __future__ import annotations
 
-<<<<<<< HEAD
 import logging
-=======
->>>>>>> origin/dev
-from dataclasses import dataclass, field
-from typing import Literal
-
-import numpy as np
-import pandas as pd
-
-from data_preparation.aggregate_time_series import TimeGranularity
-
-<<<<<<< HEAD
-logger = logging.getLogger(__name__)
-
-=======
->>>>>>> origin/dev
 
 @dataclass
 class FeatureConfig:
@@ -358,11 +342,7 @@ def engineer_time_series_features(
         df = df.dropna(subset=feature_cols).reset_index(drop=True)
         n_dropped = n_before - len(df)
         if n_dropped > 0:
-<<<<<<< HEAD
             logger.info(f"Dropped {n_dropped} rows with NaN from lag/rolling features")
-=======
-            print(f"Dropped {n_dropped} rows with NaN from lag/rolling features")
->>>>>>> origin/dev
 
     return df, feature_cols
 

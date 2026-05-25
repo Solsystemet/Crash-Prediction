@@ -6,21 +6,7 @@ Supports hourly, daily, and weekly granularities.
 
 from __future__ import annotations
 
-<<<<<<< HEAD
 import logging
-=======
->>>>>>> origin/dev
-from dataclasses import dataclass
-from typing import Literal
-
-import numpy as np
-import pandas as pd
-
-<<<<<<< HEAD
-logger = logging.getLogger(__name__)
-
-=======
->>>>>>> origin/dev
 
 TimeGranularity = Literal["hourly", "daily", "weekly"]
 
@@ -86,11 +72,7 @@ def aggregate_crashes_by_time(
     # Drop rows with invalid timestamps
     n_invalid = df["_timestamp"].isna().sum()
     if n_invalid > 0:
-<<<<<<< HEAD
         logger.warning(f"Dropping {n_invalid} rows with invalid timestamps")
-=======
-        print(f"Warning: Dropping {n_invalid} rows with invalid timestamps")
->>>>>>> origin/dev
         df = df.dropna(subset=["_timestamp"])
 
     # Floor timestamp to bucket start
