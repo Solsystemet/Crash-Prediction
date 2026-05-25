@@ -141,8 +141,170 @@ def map_severity(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+class DataPreprocessor:
+    """Preprocessor that separates fit and transform to prevent data leakage.
+    
+    Use fit() on training data only, then transform() on both train and test.
+    This ensures test data does not influence preprocessing statistics.
+    """
+    
+    def __init__(
+        self,
+        categorical_features: list[str] | None = None,
+        numerical_features: list[str] | None = None,
+    ):
+        """Initialize preprocessor with feature lists.
+        
+        Args:
+            categorical_features: List of categorical column names.
+            numerical_features: List of numerical column names.
+        """
+        self.categorical_features = categorical_features or CATEGORICAL_FEATURES
+        self.numerical_features = numerical_features or NUMERICAL_FEATURES
+        self.medians: dict[str, float] = {}
+        self.encoders: dict[str, LabelEncoder] = {}
+        self.target_encoder: LabelEncoder | None = None
+        self._is_fitted = False
+    
+    def fit(self, df: pd.DataFrame) -> "DataPreprocessor":
+        """Fit preprocessor on training data only.
+        
+        Computes medians for numerical features and fits label encoders
+        for categorical features based ONLY on training data.
+        
+        Args:
+            df: Training DataFrame (already has time features and severity mapped).
+            
+        Returns:
+            Self for method chaining.
+        """
+        # Compute medians on training data only
+        for col in self.numerical_features:
+            if col in df.columns:
+                self.medians[col] = df[col].median()
+        
+        # Fit encoders on training categories only
+        for col in self.categorical_features:
+            if col in df.columns:
+                le = LabelEncoder()
+                # Include "UNKNOWN" in fit to handle missing and unseen values
+                all_values = df[col].fillna("UNKNOWN").astype(str).tolist()
+                if "UNKNOWN" not in all_values:
+                    all_values.append("UNKNOWN")
+                le.fit(all_values)
+                self.encoders[col] = le
+        
+        # Fit target encoder with fixed class order
+        self.target_encoder = LabelEncoder()
+        self.target_encoder.classes_ = np.array(CLASS_NAMES)
+        
+        self._is_fitted = True
+        return self
+    
+    def transform(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Transform DataFrame using fitted statistics.
+        
+        Args:
+            df: DataFrame to transform (train or test).
+            
+        Returns:
+            Transformed DataFrame with encoded features.
+            
+        Raises:
+            RuntimeError: If fit() has not been called.
+        """
+        if not self._is_fitted:
+            raise RuntimeError("DataPreprocessor must be fit before transform")
+        
+        df = df.copy()
+        
+        # Fill missing numerical values with training medians
+        for col in self.numerical_features:
+            if col in df.columns and col in self.medians:
+                df[col] = df[col].fillna(self.medians[col])
+        
+        # Fill and encode categorical features (vectorized for speed)
+        for col in self.categorical_features:
+            if col in df.columns and col in self.encoders:
+                df[col] = df[col].fillna("UNKNOWN").astype(str)
+                le = self.encoders[col]
+                
+                # Create mapping dict for known classes
+                class_to_idx = {cls: idx for idx, cls in enumerate(le.classes_)}
+                
+                # Get fallback value for unseen categories
+                fallback = class_to_idx.get("UNKNOWN", -1)
+                
+                # Vectorized mapping with fallback
+                df[col] = df[col].map(class_to_idx).fillna(fallback).astype(int)
+        
+        # Encode target
+        if "SEVERITY_3CLASS" in df.columns and self.target_encoder is not None:
+            df["SEVERITY_3CLASS"] = self.target_encoder.transform(df["SEVERITY_3CLASS"])
+        
+        return df
+    
+    def fit_transform(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Fit and transform in one step (for training data).
+        
+        Args:
+            df: Training DataFrame.
+            
+        Returns:
+            Transformed DataFrame.
+        """
+        return self.fit(df).transform(df)
+    
+    def get_encoders(self) -> dict[str, LabelEncoder]:
+        """Get all encoders for saving with model.
+        
+        Returns:
+            Dictionary of feature name to LabelEncoder.
+        """
+        encoders = dict(self.encoders)
+        if self.target_encoder is not None:
+            encoders["target"] = self.target_encoder
+        return encoders
+
+
+def prepare_raw_data(df: pd.DataFrame) -> pd.DataFrame:
+    """Prepare raw data before train/test split.
+    
+    Extracts time features and maps severity, but does NOT compute
+    statistics or fit encoders (those happen after split).
+    
+    Args:
+        df: Raw DataFrame from traffic_crashes.csv.
+        
+    Returns:
+        DataFrame with time features and severity column, rows with
+        missing severity dropped.
+    """
+    df = df.copy()
+    
+    # Extract time features (deterministic, no statistics)
+    df = extract_time_features(df)
+    
+    # Map severity target (deterministic mapping)
+    df = map_severity(df)
+    
+    # Drop rows with missing target
+    df = df.dropna(subset=["SEVERITY_3CLASS"])
+    
+    # Select only needed columns (keep CRASH_DATE for potential temporal split)
+    all_features = CATEGORICAL_FEATURES + NUMERICAL_FEATURES
+    columns_needed = all_features + ["SEVERITY_3CLASS", "CRASH_DATE"]
+    df = df[[c for c in columns_needed if c in df.columns]].copy()
+    
+    return df
+
+
 def prepare_data(df: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, LabelEncoder]]:
     """Prepare features and encode categoricals.
+    
+    DEPRECATED: This function computes statistics on the full dataset before
+    splitting, which causes data leakage. Use prepare_raw_data() + 
+    DataPreprocessor.fit_transform() instead.
 
     Args:
         df: Raw DataFrame from traffic_crashes.csv.
@@ -269,6 +431,8 @@ def save_model(
     feature_names: list[str],
     metrics: dict,
     output_dir: Path,
+    preprocessor: DataPreprocessor | None = None,
+    metadata: dict | None = None,
 ) -> None:
     """Save model and encoders to disk.
 
@@ -278,6 +442,8 @@ def save_model(
         feature_names: List of feature column names.
         metrics: Training metrics.
         output_dir: Directory to save model artifacts.
+        preprocessor: Optional DataPreprocessor for leakage-free inference.
+        metadata: Optional metadata dict (split type, date ranges, etc.).
     """
     output_dir.mkdir(parents=True, exist_ok=True)
     
@@ -300,6 +466,18 @@ def save_model(
     metrics_path = output_dir / "metrics.joblib"
     joblib.dump(metrics, metrics_path)
     logger.info(f"Saved metrics to {metrics_path}")
+    
+    # Save preprocessor (for leakage-free inference)
+    if preprocessor is not None:
+        preprocessor_path = output_dir / "preprocessor.joblib"
+        joblib.dump(preprocessor, preprocessor_path)
+        logger.info(f"Saved preprocessor to {preprocessor_path}")
+    
+    # Save metadata
+    if metadata is not None:
+        metadata_path = output_dir / "metadata.joblib"
+        joblib.dump(metadata, metadata_path)
+        logger.info(f"Saved metadata to {metadata_path}")
 
 
 def main(
@@ -307,6 +485,7 @@ def main(
     random_state: int = 42,
     config: DataSourceConfig | None = None,
     feature_filter: str = "drop-low",
+    temporal_split: bool = False,
 ) -> dict:
     """Main training pipeline.
 
@@ -315,10 +494,13 @@ def main(
         random_state: Random seed for reproducibility.
         config: Data source configuration (default: crash only).
         feature_filter: Feature filtering mode ('none', 'drop-low', 'drop-review').
+        temporal_split: Use chronological split instead of random (prevents temporal leakage).
 
     Returns:
         Dictionary of evaluation metrics.
     """
+    from data_preparation.resampling import temporal_train_test_split
+    
     if config is None:
         config = DataSourceConfig(use_vehicles=False, use_people=False, use_weather=False)
     
@@ -326,6 +508,7 @@ def main(
     
     logger.info(f"Data configuration: {config}")
     logger.info(f"Output directory: {output_dir}")
+    logger.info(f"Split type: {'temporal' if temporal_split else 'random stratified'}")
     logger.info("Loading traffic crashes data...")
     df = triple_merge(config=config, verbose=False)
     logger.info(f"Loaded {len(df)} crashes")
@@ -335,44 +518,65 @@ def main(
         logger.info(f"Sampling {sample_size} crashes...")
         df = df.sample(n=sample_size, random_state=random_state)
     
-    # Prepare data
-    logger.info("Preparing data...")
-    df, encoders = prepare_data(df)
+    # Prepare raw data (time features + severity mapping, NO encoding yet)
+    logger.info("Preparing raw data (before split)...")
+    df = prepare_raw_data(df)
     logger.info(f"Prepared {len(df)} samples with valid target")
     
-    # Log class distribution
-    target_counts = pd.Series(df["SEVERITY_3CLASS"]).value_counts().sort_index()
+    # ==========================================================================
+    # SPLIT FIRST, THEN PREPROCESS (prevents data leakage)
+    # ==========================================================================
+    logger.info("Splitting data (80/20)...")
+    
+    if temporal_split:
+        # Chronological split: train on past, test on future
+        train_df, test_df = temporal_train_test_split(
+            df, date_col="CRASH_DATE", test_size=0.2
+        )
+    else:
+        # Random stratified split (original behavior)
+        from sklearn.model_selection import train_test_split as sklearn_split
+        train_df, test_df = sklearn_split(
+            df, test_size=0.2, random_state=random_state, stratify=df["SEVERITY_3CLASS"]
+        )
+        logger.info(f"  Train: {len(train_df)}, Test: {len(test_df)}")
+    
+    # ==========================================================================
+    # FIT PREPROCESSOR ON TRAINING DATA ONLY
+    # ==========================================================================
+    logger.info("Fitting preprocessor on training data only...")
+    preprocessor = DataPreprocessor()
+    train_df = preprocessor.fit_transform(train_df)
+    test_df = preprocessor.transform(test_df)
+    
+    encoders = preprocessor.get_encoders()
+    
+    # Log class distribution (on encoded training data)
+    target_counts = pd.Series(train_df["SEVERITY_3CLASS"]).value_counts().sort_index()
     for idx, count in target_counts.items():
-        logger.info(f"  {CLASS_NAMES[idx]}: {count} ({100*count/len(df):.1f}%)")
+        logger.info(f"  {CLASS_NAMES[idx]}: {count} ({100*count/len(train_df):.1f}%)")
     
     # Split features and target
     feature_cols = CATEGORICAL_FEATURES + NUMERICAL_FEATURES
-    feature_cols = [c for c in feature_cols if c in df.columns]
+    feature_cols = [c for c in feature_cols if c in train_df.columns]
     
     # Apply importance-based feature filtering if enabled
     if feature_filter != "none":
-        X_df = df[feature_cols].copy()
-        X_df, feature_cols, filter_result = filter_by_importance(
-            X_df, feature_cols, mode=feature_filter
+        X_train_df = train_df[feature_cols].copy()
+        X_train_df, feature_cols, filter_result = filter_by_importance(
+            X_train_df, feature_cols, mode=feature_filter
         )
         logger.info(f"Feature filter '{feature_filter}': {filter_result.n_original} -> {filter_result.n_kept} features")
         if filter_result.dropped_features:
             logger.info(f"Dropped features: {filter_result.dropped_features[:5]}{'...' if len(filter_result.dropped_features) > 5 else ''}")
-        X = X_df.values
+        X_train = X_train_df.values
+        X_test = test_df[feature_cols].values
     else:
-        X = df[feature_cols].values
+        X_train = train_df[feature_cols].values
+        X_test = test_df[feature_cols].values
     
-    y = df["SEVERITY_3CLASS"].values
-    
-    # Train/test split
-    logger.info("Splitting data (80/20)...")
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y,
-        test_size=0.2,
-        random_state=random_state,
-        stratify=y,
-    )
-    logger.info(f"  Train: {len(X_train)}, Test: {len(X_test)}")
+    y_train = train_df["SEVERITY_3CLASS"].values
+    y_test = test_df["SEVERITY_3CLASS"].values
     
     # Train model
     model = train_model(X_train, y_train, random_state)
@@ -554,12 +758,23 @@ def main(
     except Exception as e:
         logger.warning(f"Error generating plots: {e}")
     
-    # Save
-    save_model(model, encoders, feature_cols, metrics, output_dir)
+    # Save model with preprocessor and metadata
+    metadata = {
+        "split_type": "temporal" if temporal_split else "random_stratified",
+        "random_state": random_state,
+        "feature_filter": feature_filter,
+        "n_train": len(y_train),
+        "n_test": len(y_test),
+    }
+    save_model(
+        model, encoders, feature_cols, metrics, output_dir,
+        preprocessor=preprocessor, metadata=metadata
+    )
     
     logger.info(f"\n{'='*60}")
     logger.info("Training complete!")
     logger.info(f"Model saved to: {output_dir}")
+    logger.info(f"Split type: {metadata['split_type']}")
     logger.info(f"{'='*60}")
     
     return metrics
@@ -602,6 +817,11 @@ if __name__ == "__main__":
         default="drop-low",
         help="Feature filtering mode: 'none' (all features), 'drop-low' (drop DROP features), 'drop-review' (drop DROP + REVIEW). Default: drop-low",
     )
+    parser.add_argument(
+        "--temporal-split",
+        action="store_true",
+        help="Use chronological train/test split instead of random. Train on older data, test on newer. Prevents temporal leakage for more realistic evaluation.",
+    )
     
     args = parser.parse_args()
     
@@ -612,4 +832,10 @@ if __name__ == "__main__":
         use_weather=args.include_weather,
     )
     
-    main(sample_size=args.sample, random_state=args.seed, config=config, feature_filter=args.feature_filter)
+    main(
+        sample_size=args.sample,
+        random_state=args.seed,
+        config=config,
+        feature_filter=args.feature_filter,
+        temporal_split=args.temporal_split,
+    )

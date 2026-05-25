@@ -90,17 +90,32 @@ INJURY_MAPPING = {
 def prepare_test_data(
     sample_size: int | None = None,
     feature_filter: str = "drop-low",
+    temporal_split: bool = False,
+    model_dir: Path | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, list[str]]:
-    """Load and prepare test data using the same preprocessing as training.
+    """Load and prepare test data using saved preprocessor for consistency.
+    
+    This function now uses the saved preprocessor from training to ensure
+    no data leakage. Statistics (medians, encoders) are applied from the
+    training set only.
     
     Args:
         sample_size: Optional sample size limit.
         feature_filter: Feature filtering mode ('none', 'drop-low', 'drop-review').
                        Must match the filter used during training for valid comparison.
+        temporal_split: Use chronological split instead of random.
+        model_dir: Optional model directory to load preprocessor from.
+                   Defaults to simple_rf model.
     
     Returns:
         X_test, y_test, y_train (for baseline fitting), feature_names
     """
+    from data_preparation.resampling import temporal_train_test_split
+    from training.main_simple_rf import prepare_raw_data, DataPreprocessor
+    
+    if model_dir is None:
+        model_dir = MODELS_DIR / "simple_rf"
+    
     logger.info("Loading crash data...")
     df = triple_merge(config=CRASH_ONLY, verbose=False)
     
@@ -108,55 +123,47 @@ def prepare_test_data(
         df = df.sample(n=sample_size, random_state=42)
         logger.info(f"Sampled {sample_size} rows")
     
-    # Extract time features
-    crash_datetime = pd.to_datetime(df["CRASH_DATE"], format="%m/%d/%Y %I:%M:%S %p", errors="coerce")
-    df["CRASH_HOUR"] = crash_datetime.dt.hour.fillna(12).astype(int)
-    df["CRASH_DAY_OF_WEEK"] = crash_datetime.dt.dayofweek.fillna(0).astype(int) + 1
-    df["CRASH_MONTH"] = crash_datetime.dt.month.fillna(6).astype(int)
+    # Prepare raw data (time features + severity, NO encoding yet)
+    df = prepare_raw_data(df)
+    logger.info(f"Prepared {len(df)} samples with valid target")
     
-    # Map severity
-    df["SEVERITY_3CLASS"] = df["MOST_SEVERE_INJURY"].map(INJURY_MAPPING)
-    df = df.dropna(subset=["SEVERITY_3CLASS"])
-    
-    # Select features
-    all_features = CATEGORICAL_FEATURES + NUMERICAL_FEATURES
-    columns_needed = all_features + ["SEVERITY_3CLASS"]
-    df = df[[c for c in columns_needed if c in df.columns]].copy()
-    
-    # Fill missing values
-    for col in NUMERICAL_FEATURES:
-        if col in df.columns:
-            df[col] = df[col].fillna(df[col].median())
-    
-    for col in CATEGORICAL_FEATURES:
-        if col in df.columns:
-            df[col] = df[col].fillna("UNKNOWN")
-    
-    # We'll use the encoders from the simple_rf model for consistency
-    encoders_path = MODELS_DIR / "simple_rf" / "encoders.joblib"
-    if encoders_path.exists():
-        encoders = joblib.load(encoders_path)
-        for col in CATEGORICAL_FEATURES:
-            if col in df.columns and col in encoders:
-                le = encoders[col]
-                # Handle unseen categories
-                df[col] = df[col].astype(str).apply(
-                    lambda x: le.transform([x])[0] if x in le.classes_ else -1
-                )
+    # ==========================================================================
+    # SPLIT FIRST (same as training)
+    # ==========================================================================
+    if temporal_split:
+        train_df, test_df = temporal_train_test_split(
+            df, date_col="CRASH_DATE", test_size=0.2
+        )
     else:
-        # Fallback: encode from scratch
-        for col in CATEGORICAL_FEATURES:
-            if col in df.columns:
-                le = LabelEncoder()
-                df[col] = le.fit_transform(df[col].astype(str))
+        train_df, test_df = train_test_split(
+            df, test_size=0.2, random_state=42, stratify=df["SEVERITY_3CLASS"]
+        )
     
-    # Encode target
-    target_encoder = LabelEncoder()
-    target_encoder.classes_ = np.array(CLASS_NAMES)
-    df["SEVERITY_3CLASS"] = target_encoder.transform(df["SEVERITY_3CLASS"])
+    logger.info(f"Split: train={len(train_df)}, test={len(test_df)}")
+    
+    # ==========================================================================
+    # LOAD PREPROCESSOR OR CREATE FROM TRAINING DATA
+    # ==========================================================================
+    preprocessor_path = model_dir / "preprocessor.joblib"
+    
+    if preprocessor_path.exists():
+        logger.info(f"Loading preprocessor from {preprocessor_path}")
+        preprocessor = joblib.load(preprocessor_path)
+    else:
+        # Fallback: fit preprocessor on training data (for backward compatibility)
+        logger.warning(
+            f"No preprocessor found at {preprocessor_path}. "
+            "Fitting from training data (may differ from original training)."
+        )
+        preprocessor = DataPreprocessor()
+        preprocessor.fit(train_df)
+    
+    # Transform both train and test using training-fitted preprocessor
+    train_df = preprocessor.transform(train_df)
+    test_df = preprocessor.transform(test_df)
     
     # Prepare X and y
-    feature_cols = [c for c in CATEGORICAL_FEATURES + NUMERICAL_FEATURES if c in df.columns]
+    feature_cols = [c for c in CATEGORICAL_FEATURES + NUMERICAL_FEATURES if c in test_df.columns]
     
     # Apply importance-based feature filtering if enabled
     if feature_filter != "none":
@@ -164,19 +171,17 @@ def prepare_test_data(
             f"Feature filter '{feature_filter}' is enabled. "
             "Ensure this matches the filter used during training for valid comparison!"
         )
-        X_df = df[feature_cols].copy()
-        X_df, feature_cols, filter_result = filter_by_importance(
-            X_df, feature_cols, mode=feature_filter
+        X_test_df = test_df[feature_cols].copy()
+        X_test_df, feature_cols, filter_result = filter_by_importance(
+            X_test_df, feature_cols, mode=feature_filter
         )
         logger.info(f"Feature filter '{feature_filter}': {filter_result.n_original} -> {filter_result.n_kept} features")
-        X = X_df.values
+        X_test = X_test_df.values
     else:
-        X = df[feature_cols].values
+        X_test = test_df[feature_cols].values
     
-    y = df["SEVERITY_3CLASS"].values
-    
-    # Use same test split as training (20%)
-    _, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
+    y_test = test_df["SEVERITY_3CLASS"].values
+    y_train = train_df["SEVERITY_3CLASS"].values
     
     logger.info(f"Test set: {len(X_test)} samples")
     
@@ -504,19 +509,27 @@ def generate_roc_comparison(
     logger.info(f"ROC data saved to {json_path}")
 
 
-def main(sample_size: int | None = None, feature_filter: str = "drop-low") -> None:
+def main(
+    sample_size: int | None = None,
+    feature_filter: str = "drop-low",
+    temporal_split: bool = False,
+) -> None:
     """Run comparison of all trained models.
     
     Args:
         sample_size: Optional sample size limit.
         feature_filter: Feature filtering mode. Must match training filter!
+        temporal_split: Use chronological split (must match training split type).
     """
     logger.info("Starting model comparison...")
+    logger.info(f"Split type: {'temporal' if temporal_split else 'random stratified'}")
     if feature_filter != "none":
         logger.info(f"Feature filter: {feature_filter}")
     
     # Prepare test data
-    X_test, y_test, y_train, feature_names = prepare_test_data(sample_size, feature_filter)
+    X_test, y_test, y_train, feature_names = prepare_test_data(
+        sample_size, feature_filter, temporal_split=temporal_split
+    )
     
     # Find all models
     models = find_all_models()
@@ -537,13 +550,17 @@ def main(sample_size: int | None = None, feature_filter: str = "drop-low") -> No
             logger.warning(f"Could not load model from {model_dir}")
             continue
         
-        metrics = evaluate_model(model, X_test, y_test, model_name)
-        results.append(metrics)
-        
-        logger.info(f"  Accuracy: {metrics['accuracy']:.4f}")
-        logger.info(f"  F1 Macro: {metrics['f1_macro']:.4f}")
-        if "recall_SEVERE" in metrics:
-            logger.info(f"  SEVERE Recall: {metrics['recall_SEVERE']:.4f}")
+        try:
+            metrics = evaluate_model(model, X_test, y_test, model_name)
+            results.append(metrics)
+            
+            logger.info(f"  Accuracy: {metrics['accuracy']:.4f}")
+            logger.info(f"  F1 Macro: {metrics['f1_macro']:.4f}")
+            if "recall_SEVERE" in metrics:
+                logger.info(f"  SEVERE Recall: {metrics['recall_SEVERE']:.4f}")
+        except Exception as e:
+            logger.error(f"  Failed to evaluate {model_name}: {e}")
+            continue
     
     # Print comparison table
     print_comparison_table(results)
@@ -772,6 +789,11 @@ if __name__ == "__main__":
         default="drop-low",
         help="Feature filtering mode. MUST match the filter used during training! Default: drop-low",
     )
+    parser.add_argument(
+        "--temporal-split",
+        action="store_true",
+        help="Use chronological train/test split. MUST match the split type used during training!",
+    )
     
     args = parser.parse_args()
-    main(sample_size=args.sample, feature_filter=args.feature_filter)
+    main(sample_size=args.sample, feature_filter=args.feature_filter, temporal_split=args.temporal_split)

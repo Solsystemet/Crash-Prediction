@@ -136,6 +136,10 @@ def prepare_data(
 ) -> tuple[np.ndarray, np.ndarray, list[str], dict]:
     """Load and prepare data for training.
     
+    DEPRECATED: This function computes statistics on the full dataset before
+    splitting, which causes data leakage. Use prepare_raw_data() + 
+    DataPreprocessor.fit_transform() instead (see main_simple_rf.py).
+    
     Args:
         sample_size: Optional sample size limit.
         config: Data source configuration (default: crash only).
@@ -756,6 +760,7 @@ def main(
     use_gpu: bool | None = None,
     config: DataSourceConfig | None = None,
     feature_filter: str = "drop-low",
+    temporal_split: bool = False,
 ) -> dict[str, dict]:
     """Main tuning pipeline.
     
@@ -766,7 +771,11 @@ def main(
         use_gpu: Use GPU for XGBoost/CatBoost. None=auto-detect.
         config: Data source configuration (default: crash only).
         feature_filter: Feature filtering mode ('none', 'drop-low', 'drop-review').
+        temporal_split: Use chronological split instead of random (prevents temporal leakage).
     """
+    from data_preparation.resampling import temporal_train_test_split
+    from training.main_simple_rf import prepare_raw_data, DataPreprocessor
+    
     if config is None:
         config = DataSourceConfig(use_vehicles=False, use_people=False, use_weather=False)
     
@@ -781,22 +790,81 @@ def main(
     
     logger.info(f"Data configuration: {config}")
     logger.info(f"Output directory: {output_dir}")
+    logger.info(f"Split type: {'temporal' if temporal_split else 'random stratified'}")
     logger.info(f"Starting hyperparameter tuning: model={model_type}, n_trials={n_trials}")
     logger.info(f"Using {CV_FOLDS}-fold CV with pruning (warmup={PRUNING_WARMUP_STEPS})")
     logger.info(f"Feature filter: {feature_filter}")
     
-    # Prepare data
-    X, y, feature_names, encoders = prepare_data(sample_size, config, feature_filter)
+    # Load raw data
+    logger.info("Loading crash data...")
+    df = triple_merge(config=config, verbose=False)
     
-    # Train/val/test split (60/20/20)
-    X_trainval, X_test, y_trainval, y_test = train_test_split(
-        X, y, test_size=0.2, random_state=42, stratify=y
-    )
-    X_train, X_val, y_train, y_val = train_test_split(
-        X_trainval, y_trainval, test_size=0.25, random_state=42, stratify=y_trainval
-    )
+    if sample_size and len(df) > sample_size:
+        df = df.sample(n=sample_size, random_state=42)
+        logger.info(f"Sampled {sample_size} rows")
     
-    logger.info(f"Train: {len(X_train)}, Val: {len(X_val)}, Test: {len(X_test)}")
+    # Prepare raw data (time features + severity, NO encoding yet)
+    df = prepare_raw_data(df)
+    logger.info(f"Prepared {len(df)} samples with valid target")
+    
+    # ==========================================================================
+    # SPLIT FIRST, THEN PREPROCESS (prevents data leakage)
+    # ==========================================================================
+    if temporal_split:
+        # 80/20 temporal split
+        trainval_df, test_df = temporal_train_test_split(
+            df, date_col="CRASH_DATE", test_size=0.2
+        )
+        # Further split trainval into train/val (75/25 of trainval = 60/20 overall)
+        train_df, val_df = temporal_train_test_split(
+            trainval_df, date_col="CRASH_DATE", test_size=0.25
+        )
+    else:
+        # Random stratified split
+        trainval_df, test_df = train_test_split(
+            df, test_size=0.2, random_state=42, stratify=df["SEVERITY_3CLASS"]
+        )
+        train_df, val_df = train_test_split(
+            trainval_df, test_size=0.25, random_state=42, stratify=trainval_df["SEVERITY_3CLASS"]
+        )
+    
+    logger.info(f"Split: train={len(train_df)}, val={len(val_df)}, test={len(test_df)}")
+    
+    # ==========================================================================
+    # FIT PREPROCESSOR ON TRAINING DATA ONLY
+    # ==========================================================================
+    logger.info("Fitting preprocessor on training data only...")
+    preprocessor = DataPreprocessor()
+    train_df = preprocessor.fit_transform(train_df)
+    val_df = preprocessor.transform(val_df)
+    test_df = preprocessor.transform(test_df)
+    trainval_df = preprocessor.transform(trainval_df.copy())  # For CV
+    
+    encoders = preprocessor.get_encoders()
+    
+    # Prepare arrays
+    feature_names = CATEGORICAL_FEATURES + NUMERICAL_FEATURES
+    feature_names = [c for c in feature_names if c in train_df.columns]
+    
+    # Apply importance-based feature filtering if enabled
+    if feature_filter != "none":
+        train_features_df = train_df[feature_names].copy()
+        train_features_df, feature_names, filter_result = filter_by_importance(
+            train_features_df, feature_names, mode=feature_filter
+        )
+        logger.info(f"Feature filter '{feature_filter}': {filter_result.n_original} -> {filter_result.n_kept} features")
+    
+    X_train = train_df[feature_names].values
+    X_val = val_df[feature_names].values
+    X_test = test_df[feature_names].values
+    X_trainval = trainval_df[feature_names].values
+    
+    y_train = train_df["SEVERITY_3CLASS"].values
+    y_val = val_df["SEVERITY_3CLASS"].values
+    y_test = test_df["SEVERITY_3CLASS"].values
+    y_trainval = trainval_df["SEVERITY_3CLASS"].values
+    
+    logger.info(f"Data prepared: train={len(X_train)}, val={len(X_val)}, test={len(X_test)}")
     
     models_to_tune = []
     if model_type == "all":
@@ -933,6 +1001,11 @@ if __name__ == "__main__":
         default="drop-low",
         help="Feature filtering mode: 'none' (all features), 'drop-low' (drop DROP features), 'drop-review' (drop DROP + REVIEW). Default: drop-low",
     )
+    parser.add_argument(
+        "--temporal-split",
+        action="store_true",
+        help="Use chronological train/test split instead of random. Train on older data, test on newer. Prevents temporal leakage.",
+    )
     
     args = parser.parse_args()
     
@@ -953,4 +1026,5 @@ if __name__ == "__main__":
         use_gpu=use_gpu,
         config=config,
         feature_filter=args.feature_filter,
+        temporal_split=args.temporal_split,
     )

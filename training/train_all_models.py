@@ -71,6 +71,7 @@ def main(
     skip_boosting: bool = False,
     skip_tabnet: bool = False,
     n_trials: int = 30,
+    temporal_split: bool = False,
 ) -> None:
     """Train all models without feature filtering.
     
@@ -79,14 +80,18 @@ def main(
         skip_boosting: Skip the slow boosting hyperparameter tuning.
         skip_tabnet: Skip TabNet training.
         n_trials: Number of Optuna trials for boosting tuning.
+        temporal_split: Use chronological split instead of random.
     """
     logger.info("="*60)
     logger.info("TRAINING ALL MODELS (no feature filtering)")
+    logger.info(f"Split type: {'temporal' if temporal_split else 'random stratified'}")
     logger.info("="*60)
     
     base_args = ["--feature-filter", "none"]
     if sample_size:
         base_args.extend(["--sample", str(sample_size)])
+    if temporal_split:
+        base_args.append("--temporal-split")
     
     results = {}
     total_start = time.time()
@@ -173,6 +178,11 @@ if __name__ == "__main__":
         default=30,
         help="Number of Optuna trials for boosting tuning (default: 30)",
     )
+    parser.add_argument(
+        "--temporal-split",
+        action="store_true",
+        help="Use chronological train/test split instead of random. Prevents temporal leakage.",
+    )
     
     args = parser.parse_args()
     main(
@@ -180,4 +190,5 @@ if __name__ == "__main__":
         skip_boosting=args.skip_boosting,
         skip_tabnet=args.skip_tabnet,
         n_trials=args.n_trials,
+        temporal_split=args.temporal_split,
     )

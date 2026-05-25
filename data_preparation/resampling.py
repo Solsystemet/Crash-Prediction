@@ -7,11 +7,17 @@ Research shows that ignoring class imbalance leads to biased models that
 fail to identify rare but critical severe accident cases.
 """
 
+from __future__ import annotations
+
 import logging
+from typing import TYPE_CHECKING
 
 import numpy as np
 from numpy.typing import NDArray
 from typing import Literal
+
+if TYPE_CHECKING:
+    import pandas as pd
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +41,73 @@ def check_imblearn_available() -> None:
             "imbalanced-learn is required for resampling. "
             "Install it with: pip install imbalanced-learn"
         )
+
+
+def temporal_train_test_split(
+    df: "pd.DataFrame",
+    date_col: str = "CRASH_DATE",
+    test_size: float = 0.2,
+    date_format: str = "%m/%d/%Y %I:%M:%S %p",
+) -> tuple["pd.DataFrame", "pd.DataFrame"]:
+    """Split DataFrame chronologically for realistic future-prediction evaluation.
+    
+    This avoids temporal leakage by ensuring the test set contains only
+    crashes that occurred AFTER all training crashes. Random splits can
+    leak future information into training, leading to over-optimistic results.
+    
+    Args:
+        df: DataFrame with a date column.
+        date_col: Name of the date column for sorting.
+        test_size: Fraction of data to use for testing (default 0.2 = 20%).
+        date_format: Format string for parsing dates.
+        
+    Returns:
+        Tuple of (train_df, test_df) where test_df contains the most recent data.
+        
+    Example:
+        >>> train_df, test_df = temporal_train_test_split(df, test_size=0.2)
+        >>> # train_df has oldest 80%, test_df has newest 20%
+    """
+    import pandas as pd
+    
+    df = df.copy()
+    
+    # Parse dates if not already datetime
+    if date_col in df.columns:
+        if not pd.api.types.is_datetime64_any_dtype(df[date_col]):
+            df["_parsed_date"] = pd.to_datetime(
+                df[date_col], format=date_format, errors="coerce"
+            )
+        else:
+            df["_parsed_date"] = df[date_col]
+    else:
+        raise ValueError(f"Date column '{date_col}' not found in DataFrame")
+    
+    # Sort by date
+    df_sorted = df.sort_values("_parsed_date", na_position="first")
+    
+    # Calculate split point
+    n_total = len(df_sorted)
+    n_train = int(n_total * (1 - test_size))
+    
+    train_df = df_sorted.iloc[:n_train].drop(columns=["_parsed_date"])
+    test_df = df_sorted.iloc[n_train:].drop(columns=["_parsed_date"])
+    
+    # Log date ranges
+    if "_parsed_date" in df_sorted.columns or date_col in df_sorted.columns:
+        train_dates = df_sorted.iloc[:n_train]["_parsed_date"]
+        test_dates = df_sorted.iloc[n_train:]["_parsed_date"]
+        
+        train_start = train_dates.min()
+        train_end = train_dates.max()
+        test_start = test_dates.min()
+        test_end = test_dates.max()
+        
+        logger.info(f"Temporal split: train={n_train}, test={n_total - n_train}")
+        logger.info(f"  Train period: {train_start} to {train_end}")
+        logger.info(f"  Test period:  {test_start} to {test_end}")
+    
+    return train_df, test_df
 
 
 def get_class_distribution(y: NDArray) -> dict[int, int]:
