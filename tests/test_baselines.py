@@ -1,6 +1,7 @@
 """Quick test for baseline module."""
 
 import numpy as np
+<<<<<<< HEAD
 from training.baselines import (
     ClassificationBaseline,
     RegressionBaseline,
@@ -8,6 +9,9 @@ from training.baselines import (
     create_imbalance_baselines,
     STRATEGY_ALIASES,
 )
+=======
+from training.baselines import ClassificationBaseline, RegressionBaseline, compare_to_baseline
+>>>>>>> origin/dev
 
 def test_classification_baseline():
     """Test classification baseline."""
@@ -27,6 +31,7 @@ def test_classification_baseline():
     print('  Classification baseline: OK')
 
 
+<<<<<<< HEAD
 def test_coin_flip_baselines():
     """Test coin flip baseline aliases for imbalanced classification."""
     # Simulate imbalanced data: 70% class 0, 20% class 1, 10% class 2
@@ -90,6 +95,8 @@ def test_create_imbalance_baselines():
     print('  create_imbalance_baselines: OK')
 
 
+=======
+>>>>>>> origin/dev
 def test_regression_baseline():
     """Test regression baseline."""
     y_train_reg = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
@@ -127,8 +134,11 @@ def test_compare_to_baseline():
 
 if __name__ == '__main__':
     test_classification_baseline()
+<<<<<<< HEAD
     test_coin_flip_baselines()
     test_create_imbalance_baselines()
+=======
+>>>>>>> origin/dev
     test_regression_baseline()
     test_compare_to_baseline()
     print('\n✓ All baseline tests passed!')

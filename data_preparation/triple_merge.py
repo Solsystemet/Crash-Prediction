@@ -5,6 +5,7 @@ a holistic view of accidents by fusing:
 - Human Factors: driver demographics, BAC, safety equipment
 - Crash-Specific Factors: environmental conditions from weather data
 - Vehicle-Related Factors: vehicle age, mechanical condition, defects
+<<<<<<< HEAD
 
 All models should use `triple_merge()` or `get_model_data()` as the single
 unified data loading interface. Configure which data sources to include
@@ -16,6 +17,12 @@ import logging
 import pandas as pd
 import numpy as np
 from dataclasses import dataclass
+=======
+"""
+
+import pandas as pd
+import numpy as np
+>>>>>>> origin/dev
 from pathlib import Path
 
 from data_preparation.helpers.csv_loaders import (
@@ -25,6 +32,7 @@ from data_preparation.helpers.csv_loaders import (
     get_weather_stations,
 )
 
+<<<<<<< HEAD
 logger = logging.getLogger(__name__)
 
 
@@ -95,6 +103,8 @@ CRASH_VEHICLES_PEOPLE = DataSourceConfig(use_vehicles=True, use_people=True, use
 FULL_MERGE = DataSourceConfig(use_vehicles=True, use_people=True, use_weather=True)
 """All data sources: crash + vehicles + people + weather (default)."""
 
+=======
+>>>>>>> origin/dev
 
 def aggregate_vehicle_data(vehicles_df: pd.DataFrame) -> pd.DataFrame:
     """Aggregate vehicle-level data to crash-level.
@@ -331,6 +341,7 @@ def merge_with_weather(
 
 
 def triple_merge(
+<<<<<<< HEAD
     use_vehicles: bool = True,
     use_people: bool = True,
     use_weather: bool = True,
@@ -353,10 +364,26 @@ def triple_merge(
         use_people: Include aggregated people data. Ignored if config is provided.
         use_weather: Include weather data. Ignored if config is provided.
         config: DataSourceConfig object. If provided, overrides individual bool params.
+=======
+    use_weather: bool = True,
+    verbose: bool = True,
+) -> pd.DataFrame:
+    """Perform triple merge: crashes + vehicles + people + (optionally) weather.
+
+    This creates a comprehensive crash-level dataset with:
+    - Original crash data (road conditions, severity, location, time)
+    - Aggregated vehicle data (vehicle count, age, types, speed violations)
+    - Aggregated people data (demographics, BAC, safety equipment)
+    - Weather data (temperature, humidity, rain, wind)
+
+    Args:
+        use_weather: Whether to include weather data in the merge.
+>>>>>>> origin/dev
         verbose: Whether to print progress information.
 
     Returns:
         Merged DataFrame at crash level.
+<<<<<<< HEAD
     
     Examples:
         >>> # Full merge (default) - all data sources
@@ -416,16 +443,55 @@ def triple_merge(
         # Merge people
         merged_df = merged_df.merge(people_agg, on="CRASH_RECORD_ID", how="left")
         sources_used.append("people")
+=======
+    """
+    if verbose:
+        print("Loading crash data...")
+    crash_df = get_traffic_crashes()
+    initial_count = len(crash_df)
+
+    if verbose:
+        print(f"  Loaded {initial_count:,} crashes")
+
+    # Load and aggregate vehicle data
+    if verbose:
+        print("Loading and aggregating vehicle data...")
+    vehicles_df = get_crash_vehicles()
+    vehicle_agg = aggregate_vehicle_data(vehicles_df)
+
+    if verbose:
+        print(f"  Aggregated {len(vehicles_df):,} vehicle records to {len(vehicle_agg):,} crashes")
+
+    # Merge vehicles
+    merged_df = crash_df.merge(vehicle_agg, on="CRASH_RECORD_ID", how="left")
+
+    # Load and aggregate people data
+    if verbose:
+        print("Loading and aggregating people data...")
+    people_df = get_crash_people()
+    people_agg = aggregate_people_data(people_df)
+
+    if verbose:
+        print(f"  Aggregated {len(people_df):,} person records to {len(people_agg):,} crashes")
+
+    # Merge people
+    merged_df = merged_df.merge(people_agg, on="CRASH_RECORD_ID", how="left")
+>>>>>>> origin/dev
 
     # Load and merge weather (optional)
     if use_weather:
         if verbose:
+<<<<<<< HEAD
             logger.info("Loading and merging weather data...")
+=======
+            print("Loading and merging weather data...")
+>>>>>>> origin/dev
         weather_df = get_weather_stations()
         merged_df = merge_with_weather(merged_df, weather_df)
 
         weather_matched = merged_df["Air Temperature"].notna().sum()
         if verbose:
+<<<<<<< HEAD
             logger.info(f"  Matched {weather_matched:,} crashes with weather data")
         sources_used.append("weather")
 
@@ -436,10 +502,20 @@ def triple_merge(
             logger.info(f"  Columns from vehicles: {list(vehicle_agg.columns[1:])}")
         if people_agg is not None:
             logger.info(f"  Columns from people: {list(people_agg.columns[1:])}")
+=======
+            print(f"  Matched {weather_matched:,} crashes with weather data")
+
+    if verbose:
+        print(f"\nTriple merge complete!")
+        print(f"  Final dataset: {len(merged_df):,} rows x {len(merged_df.columns)} columns")
+        print(f"  New columns from vehicles: {list(vehicle_agg.columns[1:])}")
+        print(f"  New columns from people: {list(people_agg.columns[1:])}")
+>>>>>>> origin/dev
 
     return merged_df
 
 
+<<<<<<< HEAD
 def get_model_data(
     config: DataSourceConfig = FULL_MERGE,
     verbose: bool = True,
@@ -464,6 +540,8 @@ def get_model_data(
     return triple_merge(config=config, verbose=verbose)
 
 
+=======
+>>>>>>> origin/dev
 def save_triple_merged_data(output_path: Path | str, **kwargs) -> pd.DataFrame:
     """Perform triple merge and save to CSV.
 
@@ -485,6 +563,7 @@ def save_triple_merged_data(output_path: Path | str, **kwargs) -> pd.DataFrame:
 
 
 if __name__ == "__main__":
+<<<<<<< HEAD
     # Demo: Different data source configurations
     print("=" * 60)
     print("Demo: Unified data loading with configurable sources")
@@ -510,3 +589,8 @@ if __name__ == "__main__":
     print(f"  Crash only:    {len(df_crash.columns)} columns")
     print(f"  With weather:  {len(df_weather.columns)} columns")
     print(f"  Full merge:    {len(df_full.columns)} columns")
+=======
+    # Quick test
+    df = triple_merge(use_weather=True, verbose=True)
+    print(f"\nSample columns: {df.columns.tolist()[:20]}")
+>>>>>>> origin/dev

@@ -7,20 +7,26 @@ Research shows that ignoring class imbalance leads to biased models that
 fail to identify rare but critical severe accident cases.
 """
 
+<<<<<<< HEAD
 from __future__ import annotations
 
 import logging
 from typing import TYPE_CHECKING
 
+=======
+>>>>>>> origin/dev
 import numpy as np
 from numpy.typing import NDArray
 from typing import Literal
 
+<<<<<<< HEAD
 if TYPE_CHECKING:
     import pandas as pd
 
 logger = logging.getLogger(__name__)
 
+=======
+>>>>>>> origin/dev
 
 # Try to import imbalanced-learn, provide helpful message if not available
 try:
@@ -43,6 +49,7 @@ def check_imblearn_available() -> None:
         )
 
 
+<<<<<<< HEAD
 def temporal_train_test_split(
     df: "pd.DataFrame",
     date_col: str = "CRASH_DATE",
@@ -110,6 +117,8 @@ def temporal_train_test_split(
     return train_df, test_df
 
 
+=======
+>>>>>>> origin/dev
 def get_class_distribution(y: NDArray) -> dict[int, int]:
     """Get the distribution of classes in labels array.
 
@@ -123,12 +132,20 @@ def get_class_distribution(y: NDArray) -> dict[int, int]:
     return dict(zip(unique, counts))
 
 
+<<<<<<< HEAD
 def log_class_distribution(
+=======
+def print_class_distribution(
+>>>>>>> origin/dev
     y: NDArray,
     title: str = "Class Distribution",
     class_names: list[str] | None = None,
 ) -> None:
+<<<<<<< HEAD
     """Log class distribution in a formatted way.
+=======
+    """Print class distribution in a formatted way.
+>>>>>>> origin/dev
 
     Args:
         y: Labels array.
@@ -138,13 +155,19 @@ def log_class_distribution(
     dist = get_class_distribution(y)
     total = len(y)
 
+<<<<<<< HEAD
     logger.info(f"{title}")
     logger.info("-" * 50)
+=======
+    print(f"\n{title}")
+    print("-" * 50)
+>>>>>>> origin/dev
 
     for label, count in sorted(dist.items()):
         pct = count / total * 100
         name = class_names[label] if class_names and label < len(class_names) else f"Class {label}"
         bar = "█" * int(pct / 2)
+<<<<<<< HEAD
         logger.info(f"  {name:30s} {count:6,} ({pct:5.1f}%) {bar}")
 
     logger.info(f"  {'Total':30s} {total:6,}")
@@ -152,6 +175,11 @@ def log_class_distribution(
 
 # Alias for backward compatibility
 print_class_distribution = log_class_distribution
+=======
+        print(f"  {name:30s} {count:6,} ({pct:5.1f}%) {bar}")
+
+    print(f"  {'Total':30s} {total:6,}")
+>>>>>>> origin/dev
 
 
 def apply_resampling(
@@ -231,8 +259,13 @@ def apply_resampling(
     X_resampled, y_resampled = sampler.fit_resample(X, y)
 
     if verbose:
+<<<<<<< HEAD
         log_class_distribution(y_resampled, title="After Resampling")
         logger.info(f"  Samples: {len(y):,} → {len(y_resampled):,} "
+=======
+        print_class_distribution(y_resampled, title="After Resampling")
+        print(f"\n  Samples: {len(y):,} → {len(y_resampled):,} "
+>>>>>>> origin/dev
               f"(+{len(y_resampled) - len(y):,})")
 
     return X_resampled, y_resampled

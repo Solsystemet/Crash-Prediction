@@ -10,7 +10,10 @@ import logging
 from pathlib import Path
 from typing import Any, Union
 
+<<<<<<< HEAD
 import joblib
+=======
+>>>>>>> origin/dev
 import numpy as np
 from sklearn.preprocessing import LabelEncoder
 
@@ -25,8 +28,11 @@ from api.models import (
     ZonePredictionResponse,
     RegressionPredictionResponse,
 )
+<<<<<<< HEAD
 from api.drift_monitor import record_inference_features
 from api.metrics import record_prediction_metrics
+=======
+>>>>>>> origin/dev
 from training.hierarchical.simplified_classifier import (
     SimplifiedTreeClassifier,
     load_simplified_model,
@@ -112,9 +118,12 @@ class ModelManager:
             from training.regression.predict import CrashCountPredictor
             model = CrashCountPredictor(model_path)
             self._regression_predictor = model
+<<<<<<< HEAD
         elif model_info.model_type in ("simple", "tuned", "deep"):
             # Simple/tuned/deep models all use same joblib format
             model = load_simple_rf_model(model_path)
+=======
+>>>>>>> origin/dev
         else:
             raise ValueError(f"Unknown model type: {model_info.model_type}")
 
@@ -124,9 +133,12 @@ class ModelManager:
         # Create label encoders for categorical features (for tree-based models)
         if model_info.model_type in ["simplified", "hierarchical", "zones"]:
             self._create_label_encoders(model_name)
+<<<<<<< HEAD
         elif model_info.model_type in ("simple", "tuned", "deep"):
             # These models have their own encoders saved during training
             self._label_encoders[model_name] = model.get("encoders", {})
+=======
+>>>>>>> origin/dev
 
         logger.info(f"Model loaded successfully: {model_name}")
         return model
@@ -209,6 +221,7 @@ class ModelManager:
         """Check if a model is currently loaded."""
         return self._current_model is not None
 
+<<<<<<< HEAD
     def reload_model(self, model_name: str | None = None) -> Any:
         """Force reload a model, clearing any cached version.
 
@@ -242,6 +255,8 @@ class ModelManager:
         self._regression_predictor = None
         logger.info("Cleared all model caches")
 
+=======
+>>>>>>> origin/dev
     def get_label_encoder(self, feature_name: str) -> LabelEncoder | None:
         """Get the label encoder for a categorical feature."""
         if self._current_model is None:
@@ -403,6 +418,7 @@ def predict(
     # Prepare features
     features = prepare_features_from_request(request)
 
+<<<<<<< HEAD
     # Record features for drift monitoring
     feature_dict = {
         "person_count": request.person_count,
@@ -416,6 +432,8 @@ def predict(
     }
     record_inference_features(feature_dict)
 
+=======
+>>>>>>> origin/dev
     # Get predictions
     l1_proba, l2_proba = model.predict_proba(features)
     prediction_class = model.predict(features)[0]
@@ -450,6 +468,7 @@ def predict(
     # Confidence is the max probability
     confidence = max(probs)
 
+<<<<<<< HEAD
     # Record prediction metrics
     record_prediction_metrics(
         model_type="simplified",
@@ -461,6 +480,8 @@ def predict(
         f"Prediction: {prediction_label} (confidence={confidence:.3f})"
     )
 
+=======
+>>>>>>> origin/dev
     return PredictionResponse(
         prediction=prediction_label,  # type: ignore
         probabilities=PredictionProbabilities(
@@ -502,7 +523,10 @@ def predict_zones(request: PredictionRequest) -> ZonePredictionResponse:
     zone_center = tuple(zone_predictor.centroids[zone_id])
 
     # Get zone-specific model
+<<<<<<< HEAD
     used_fallback = False
+=======
+>>>>>>> origin/dev
     if zone_id in zone_predictor.zone_models:
         zone_model = zone_predictor.zone_models[zone_id]
     else:
@@ -510,6 +534,7 @@ def predict_zones(request: PredictionRequest) -> ZonePredictionResponse:
         available_zones = list(zone_predictor.zone_models.keys())
         if not available_zones:
             raise RuntimeError("No zone models available")
+<<<<<<< HEAD
         original_zone = zone_id
         zone_id = available_zones[0]
         zone_model = zone_predictor.zone_models[zone_id]
@@ -518,6 +543,11 @@ def predict_zones(request: PredictionRequest) -> ZonePredictionResponse:
         logger.warning(
             f"Zone {original_zone} not found, falling back to zone {zone_id}"
         )
+=======
+        zone_id = available_zones[0]
+        zone_model = zone_predictor.zone_models[zone_id]
+        zone_center = tuple(zone_predictor.centroids[zone_id])
+>>>>>>> origin/dev
 
     # Prepare features using the zone model
     model_manager._current_model = model_name
@@ -547,6 +577,7 @@ def predict_zones(request: PredictionRequest) -> ZonePredictionResponse:
     prediction_label = class_labels[max_idx]
     confidence = max(probs)
 
+<<<<<<< HEAD
     # Record prediction metrics
     record_prediction_metrics(
         model_type="zones",
@@ -559,6 +590,8 @@ def predict_zones(request: PredictionRequest) -> ZonePredictionResponse:
         f"Zone prediction: {prediction_label} (zone={zone_id}, confidence={confidence:.3f}, fallback={used_fallback})"
     )
 
+=======
+>>>>>>> origin/dev
     return ZonePredictionResponse(
         prediction=prediction_label,  # type: ignore
         probabilities=PredictionProbabilities(
@@ -965,6 +998,7 @@ def predict_all_zones(request) -> list[ZonePredictionResponse]:
             # Skip zones that fail
 
     return predictions
+<<<<<<< HEAD
 
 
 def load_simple_rf_model(model_path: Path) -> dict:
@@ -1106,3 +1140,5 @@ def predict_simple(
         confidence=float(confidence),
         model_name=model_name,
     )
+=======
+>>>>>>> origin/dev

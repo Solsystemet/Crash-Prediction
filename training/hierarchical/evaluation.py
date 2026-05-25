@@ -372,6 +372,7 @@ def export_roc_data(
     logger.info(f"ROC data exported to {save_path}")
 
     return data
+<<<<<<< HEAD
 
 
 def plot_confusion_matrix_heatmap(
@@ -669,3 +670,5 @@ def generate_all_evaluation_plots(
     logger.info(f"Generated {len(results['plots'])} evaluation artifacts in {output_dir}")
 
     return results
+=======
+>>>>>>> origin/dev

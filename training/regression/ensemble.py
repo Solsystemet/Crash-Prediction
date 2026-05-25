@@ -19,7 +19,10 @@ import torch.nn as nn
 
 from training.regression.config import RegressionConfig, ZoneConfig, EnsembleConfig
 from training.regression.models import CrashCountMLP, ZoneAdjustmentMLP
+<<<<<<< HEAD
 from utils.csv_filename_generator import generate_csv_filename
+=======
+>>>>>>> origin/dev
 
 logger = logging.getLogger(__name__)
 
@@ -423,6 +426,7 @@ class CrashCountEnsemble:
 
         logger.info(f"Ensemble saved to {save_dir}")
 
+<<<<<<< HEAD
     def export_training_history(self, output_dir: str | Path) -> None:
         """Export training history to CSV files.
         
@@ -487,6 +491,8 @@ class CrashCountEnsemble:
         except ImportError:
             pass  # Plotting module not available
 
+=======
+>>>>>>> origin/dev
     @classmethod
     def load(cls, load_dir: str | Path) -> "CrashCountEnsemble":
         """Load ensemble from disk.

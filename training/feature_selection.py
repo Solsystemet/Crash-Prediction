@@ -27,6 +27,7 @@ logger = logging.getLogger(__name__)
 # Default path to feature importance CSV (relative to project root)
 DEFAULT_IMPORTANCE_CSV = Path(__file__).parent.parent / "models" / "plots" / "feature_importance.csv"
 
+<<<<<<< HEAD
 # Thresholds for auto-generating recommendations from importance values
 IMPORTANCE_THRESHOLDS = {
     "drop": 0.05,    # Drop features with < 5% importance
@@ -34,6 +35,8 @@ IMPORTANCE_THRESHOLDS = {
     # Features >= 10% importance are marked as KEEP
 }
 
+=======
+>>>>>>> origin/dev
 
 @dataclass
 class FeatureSelectionResult:
@@ -363,19 +366,26 @@ def load_feature_importance(
     csv_path: str | Path | None = None,
 ) -> pd.DataFrame:
     """Load feature importance data from CSV.
+<<<<<<< HEAD
     
     Supports two formats:
     1. Recommendation-based: columns (feature_name, recommendation)
     2. Importance-based: columns (feature, importance) or (feature, importance_pct)
     
     For importance-based CSVs, recommendations are auto-generated using thresholds.
+=======
+>>>>>>> origin/dev
 
     Args:
         csv_path: Path to the feature_importance.csv file.
             If None, uses the default path.
 
     Returns:
+<<<<<<< HEAD
         DataFrame with columns: feature_name, importance, recommendation.
+=======
+        DataFrame with columns: feature_name, importance, recommendation, etc.
+>>>>>>> origin/dev
 
     Raises:
         FileNotFoundError: If the CSV file doesn't exist.
@@ -388,6 +398,7 @@ def load_feature_importance(
         raise FileNotFoundError(f"Feature importance CSV not found: {csv_path}")
 
     df = pd.read_csv(csv_path)
+<<<<<<< HEAD
     
     # Normalize column names
     col_mapping = {
@@ -424,6 +435,11 @@ def load_feature_importance(
         
         df["recommendation"] = recommendations
         logger.info(f"Auto-generated recommendations: {df['recommendation'].value_counts().to_dict()}")
+=======
+    required_cols = {"feature_name", "recommendation"}
+    if not required_cols.issubset(df.columns):
+        raise ValueError(f"CSV must contain columns: {required_cols}")
+>>>>>>> origin/dev
 
     return df
 
@@ -464,6 +480,7 @@ def filter_by_importance(
     try:
         importance_df = load_feature_importance(importance_csv)
     except FileNotFoundError:
+<<<<<<< HEAD
         # Try to find any feature importance CSV in models directory
         models_dir = Path(__file__).parent.parent / "models"
         csv_files = list(models_dir.glob("**/feature_importance*.csv"))
@@ -495,6 +512,21 @@ def filter_by_importance(
             )
             return X_df, feature_cols, result
     
+=======
+        if verbose:
+            logger.warning(
+                f"Feature importance CSV not found. Skipping feature filtering. "
+                f"Run feature analysis first or use --feature-filter none."
+            )
+        result = ImportanceFilterResult(
+            kept_features=feature_cols.copy(),
+            dropped_features=[],
+            n_original=len(feature_cols),
+            n_kept=len(feature_cols),
+            missing_features=[],
+        )
+        return X_df, feature_cols, result
+>>>>>>> origin/dev
     importance_map = dict(zip(importance_df["feature_name"], importance_df["recommendation"]))
 
     # Categorize features

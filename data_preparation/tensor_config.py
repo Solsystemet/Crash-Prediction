@@ -275,6 +275,7 @@ MODERATE_SEVERITY_CONFIG = TensorConfig(
     random_seed=42,
 )
 """Moderate config with triple merge data but fewer engineered features."""
+<<<<<<< HEAD
 
 
 # =============================================================================
@@ -417,3 +418,5 @@ def get_available_features(df) -> dict[str, list[str]]:
         "numerical": available_numerical,
         "all_features": available_categorical + available_numerical,
     }
+=======
+>>>>>>> origin/dev

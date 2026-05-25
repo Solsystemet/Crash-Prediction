@@ -45,7 +45,11 @@ from data_preparation.feature_engineering import (
     add_ordinal_severity,
     engineer_all_features,
 )
+<<<<<<< HEAD
 from data_preparation.triple_merge import triple_merge, DataSourceConfig
+=======
+from data_preparation.triple_merge import triple_merge
+>>>>>>> origin/dev
 
 from training.hierarchical.config import SimplifiedTreeConfig
 from training.hierarchical.simplified_targets import (
@@ -63,6 +67,7 @@ from training.baselines import (
     ClassificationBaseline,
     compare_to_baseline,
     log_comparison,
+<<<<<<< HEAD
     print_dual_baseline_comparison,
     add_baseline_args,
     create_imbalance_baselines,
@@ -86,6 +91,17 @@ def get_output_dir(config: DataSourceConfig) -> Path:
         Path to model output directory.
     """
     return PROJECT_ROOT / "models" / "trained" / f"{MODEL_NAME}_{config.get_name_suffix()}"
+=======
+    print_baseline_comparison_box,
+    add_baseline_args,
+)
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s",
+)
+logger = logging.getLogger(__name__)
+>>>>>>> origin/dev
 
 
 def stratified_sample_severe(
@@ -327,7 +343,10 @@ def run_simplified_pipeline(
     l2_resampling_method: str | None = None,
     l2_target_recall: float | None = None,
     with_baseline: bool = True,
+<<<<<<< HEAD
     data_config: DataSourceConfig | None = None,
+=======
+>>>>>>> origin/dev
 ) -> dict:
     """Run the simplified 3-class classification pipeline.
 
@@ -337,11 +356,15 @@ def run_simplified_pipeline(
         l2_weight_multiplier: Override for L2 class weight multiplier.
         l2_resampling_method: Override for L2 resampling method ('borderline' or 'adasyn').
         l2_target_recall: Override for L2 target recall during threshold optimization.
+<<<<<<< HEAD
         data_config: Data source configuration (default: crash only).
+=======
+>>>>>>> origin/dev
 
     Returns:
         Dictionary of evaluation results.
     """
+<<<<<<< HEAD
     if data_config is None:
         data_config = DataSourceConfig(use_vehicles=False, use_people=False, use_weather=False)
     
@@ -352,6 +375,11 @@ def run_simplified_pipeline(
     logger.info("=" * 60)
     logger.info(f"Data configuration: {data_config}")
     logger.info(f"Output directory: {output_dir}")
+=======
+    logger.info("=" * 60)
+    logger.info("SIMPLIFIED 3-CLASS CLASSIFICATION PIPELINE")
+    logger.info("=" * 60)
+>>>>>>> origin/dev
 
     config = SimplifiedTreeConfig(sample_size=sample_size)
 
@@ -367,7 +395,11 @@ def run_simplified_pipeline(
 
     # Load and merge data
     logger.info("\n[1/6] Loading and merging data...")
+<<<<<<< HEAD
     df = triple_merge(config=data_config, verbose=False)
+=======
+    df = triple_merge()
+>>>>>>> origin/dev
     logger.info(f"Merged dataset shape: {df.shape}")
 
     # Sample if specified - use stratified sampling for SEVERE cases
@@ -474,16 +506,29 @@ def run_simplified_pipeline(
     logger.info("\n[6/6] Evaluating on test set...")
     results = evaluate_simplified(clf, X_test, targets_test)
 
+<<<<<<< HEAD
     # Baseline evaluation (coin flip baselines for imbalanced data)
     if with_baseline:
         baseline = create_imbalance_baselines(random_state=config.random_state)
+=======
+    # Baseline evaluation
+    if with_baseline:
+        baseline = ClassificationBaseline(
+            strategies=["most_frequent", "stratified"],
+            random_state=config.random_state,
+        )
+>>>>>>> origin/dev
         baseline.fit(targets_train.y_simplified)
         baseline_results = baseline.evaluate(
             targets_test.y_simplified,
             class_names=SIMPLIFIED_CLASS_NAMES,
         )
 
+<<<<<<< HEAD
         # Compare model to both baselines
+=======
+        # Compare model to baseline
+>>>>>>> origin/dev
         model_metrics = {
             "accuracy": results["accuracy"],
             "f1_macro": results["f1_macro"],
@@ -492,12 +537,29 @@ def run_simplified_pipeline(
         }
         comparison = compare_to_baseline(model_metrics, baseline_results)
 
+<<<<<<< HEAD
         # Print comparison against both baselines
         print_dual_baseline_comparison(
             model_metrics=model_metrics,
             baseline_results=baseline_results,
             model_name="Simplified",
             primary_metric="recall_SEVERE",
+=======
+        # Print comparison box (use stratified baseline since we stratified-sample the training data)
+        print_baseline_comparison_box(
+            model_metrics=model_metrics,
+            baseline_results=baseline_results,
+            comparison=comparison,
+            model_name="Simplified Classifier",
+            baseline_strategy="stratified",
+            primary_metric="recall_SEVERE",
+            metric_labels={
+                "accuracy": "Accuracy",
+                "f1_macro": "F1 Macro",
+                "f1_weighted": "F1 Weighted",
+                "recall_SEVERE": "SEVERE Recall",
+            },
+>>>>>>> origin/dev
         )
 
         # Store baseline results
@@ -507,6 +569,7 @@ def run_simplified_pipeline(
         }
         results["baseline_comparison"] = comparison
 
+<<<<<<< HEAD
         # Export baseline comparison CSV
         export_model_vs_baselines_csv(
             model_name="simplified_3class",
@@ -516,6 +579,8 @@ def run_simplified_pipeline(
         )
         logger.info(f"Saved timestamped baseline comparison to {output_dir}")
 
+=======
+>>>>>>> origin/dev
     # Summary
     logger.info("\n" + "=" * 60)
     logger.info("SUMMARY")
@@ -558,7 +623,12 @@ def run_simplified_pipeline(
     )
 
     # Export ROC data as JSON for frontend visualization
+<<<<<<< HEAD
     roc_json_path = output_dir / "roc_data.json"
+=======
+    model_dir = PROJECT_ROOT / "models" / "trained" / "simplified_3class"
+    roc_json_path = model_dir / "roc_data.json"
+>>>>>>> origin/dev
     export_roc_data(
         y_true_levels=y_true_levels,
         y_proba_levels=y_proba_levels,
@@ -571,6 +641,7 @@ def run_simplified_pipeline(
         logger.info(f"  {level_name}: AUC = {auc:.4f}")
         results[f"auc_{level_name}"] = auc
 
+<<<<<<< HEAD
     # Generate additional evaluation plots
     logger.info("\nGenerating additional evaluation plots...")
     
@@ -680,6 +751,12 @@ def run_simplified_pipeline(
     # Save model
     save_simplified_model(clf, str(output_dir))
     logger.info(f"Model saved to {output_dir}")
+=======
+    # Save model
+    model_dir = PROJECT_ROOT / "models" / "trained" / "simplified_3class"
+    save_simplified_model(clf, str(model_dir))
+    logger.info(f"Model saved to {model_dir}")
+>>>>>>> origin/dev
 
     return results
 
@@ -725,6 +802,7 @@ if __name__ == "__main__":
              "Higher values catch more severe cases but increase false positives.",
     )
     add_baseline_args(parser)
+<<<<<<< HEAD
     # Data source configuration flags
     parser.add_argument(
         "--include-vehicle",
@@ -750,6 +828,10 @@ if __name__ == "__main__":
         use_people=args.include_people,
         use_weather=args.include_weather,
     )
+=======
+
+    args = parser.parse_args()
+>>>>>>> origin/dev
 
     results = run_simplified_pipeline(
         sample_size=args.sample,
@@ -758,7 +840,10 @@ if __name__ == "__main__":
         l2_resampling_method=args.l2_resampling,
         l2_target_recall=args.l2_target_recall,
         with_baseline=not args.no_baseline,
+<<<<<<< HEAD
         data_config=data_config,
+=======
+>>>>>>> origin/dev
     )
 
     print("\n" + "=" * 60)

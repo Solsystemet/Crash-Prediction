@@ -6,6 +6,7 @@ to establish performance floors that trained models must beat.
 Baselines are controlled via CLI flag `--with-baseline` (default: enabled).
 Disable with `--no-baseline` to skip baseline evaluation.
 
+<<<<<<< HEAD
 For imbalanced classification problems (like crash severity prediction), use:
     - "coin_flip": Random uniform predictions (equal probability per class)
     - "biased_coin_flip": Random predictions weighted by training class distribution
@@ -13,17 +14,24 @@ For imbalanced classification problems (like crash severity prediction), use:
 Usage:
     from training.baselines import ClassificationBaseline, RegressionBaseline
     from training.baselines import create_imbalance_baselines
+=======
+Usage:
+    from training.baselines import ClassificationBaseline, RegressionBaseline
+>>>>>>> origin/dev
 
     # Classification baseline
     baseline = ClassificationBaseline(strategies=["most_frequent", "stratified"])
     baseline.fit(y_train)
     baseline_metrics = baseline.evaluate(y_test, class_names=["A", "B", "C"])
 
+<<<<<<< HEAD
     # Imbalance-aware baselines (coin flip strategies)
     baseline = create_imbalance_baselines()
     baseline.fit(y_train)
     baseline_metrics = baseline.evaluate(y_test, class_names=["NO_INJURY", "MINOR", "SEVERE"])
 
+=======
+>>>>>>> origin/dev
     # Regression baseline
     baseline = RegressionBaseline(strategies=["mean", "median"])
     baseline.fit(y_train)
@@ -57,6 +65,7 @@ logger = logging.getLogger(__name__)
 ClassificationStrategy = Literal["most_frequent", "stratified", "prior", "uniform"]
 RegressionStrategy = Literal["mean", "median", "constant"]
 
+<<<<<<< HEAD
 # User-friendly aliases for imbalanced classification baselines
 # These map to sklearn DummyClassifier strategies
 STRATEGY_ALIASES: dict[str, str] = {
@@ -64,6 +73,8 @@ STRATEGY_ALIASES: dict[str, str] = {
     "biased_coin_flip": "stratified",  # Weighted by training class distribution
 }
 
+=======
+>>>>>>> origin/dev
 
 @dataclass
 class BaselineResult:
@@ -86,21 +97,29 @@ class ClassificationBaseline:
         - "stratified": Random predictions weighted by class distribution
         - "prior": Same as stratified (alias)
         - "uniform": Random uniform predictions
+<<<<<<< HEAD
 
     Imbalance-aware aliases (for class-imbalanced problems):
         - "coin_flip": Same as "uniform" (equal 1/n_classes probability)
         - "biased_coin_flip": Same as "stratified" (weighted by class distribution)
+=======
+>>>>>>> origin/dev
     """
 
     def __init__(
         self,
+<<<<<<< HEAD
         strategies: list[str] | None = None,
+=======
+        strategies: list[ClassificationStrategy] | None = None,
+>>>>>>> origin/dev
         random_state: int = 42,
     ):
         """Initialize classification baseline.
 
         Args:
             strategies: List of baseline strategies to evaluate.
+<<<<<<< HEAD
                 Supports aliases: "coin_flip" -> "uniform", "biased_coin_flip" -> "stratified".
                 Default: ["most_frequent", "stratified"]
             random_state: Random seed for reproducibility.
@@ -112,6 +131,12 @@ class ClassificationBaseline:
             sklearn_strategy = STRATEGY_ALIASES.get(s, s)
             self._strategy_mapping[s] = sklearn_strategy
         self.strategies = raw_strategies
+=======
+                Default: ["most_frequent", "stratified"]
+            random_state: Random seed for reproducibility.
+        """
+        self.strategies = strategies or ["most_frequent", "stratified"]
+>>>>>>> origin/dev
         self.random_state = random_state
         self._models: dict[str, DummyClassifier] = {}
         self._is_fitted = False
@@ -128,11 +153,18 @@ class ClassificationBaseline:
         # Create dummy X (DummyClassifier ignores features but requires X)
         X_dummy = np.zeros((len(y_train), 1))
 
+<<<<<<< HEAD
         for user_strategy in self.strategies:
             sklearn_strategy = self._strategy_mapping[user_strategy]
             model = DummyClassifier(strategy=sklearn_strategy, random_state=self.random_state)
             model.fit(X_dummy, y_train)
             self._models[user_strategy] = model
+=======
+        for strategy in self.strategies:
+            model = DummyClassifier(strategy=strategy, random_state=self.random_state)
+            model.fit(X_dummy, y_train)
+            self._models[strategy] = model
+>>>>>>> origin/dev
 
         self._is_fitted = True
         return self
@@ -576,6 +608,7 @@ def print_baseline_comparison_box(
     total_width = 68
     
     # Print header
+<<<<<<< HEAD
     logger.info("")
     logger.info(f"{TL}{H * (total_width - 2)}{TR}")
     
@@ -590,6 +623,22 @@ def print_baseline_comparison_box(
     logger.info(header)
     
     logger.info(f"{LT}{HL * (label_width + 2)}{X}{HL * 10}{X}{HL * 10}{X}{HL * 12}{X}{HL * 10}{RT}")
+=======
+    print()
+    print(f"{TL}{H * (total_width - 2)}{TR}")
+    
+    title = f"MODEL VS BASELINE COMPARISON ({baseline_strategy.upper()})"
+    padding = (total_width - 2 - len(title)) // 2
+    print(f"{V}{' ' * padding}{title}{' ' * (total_width - 2 - padding - len(title))}{V}")
+    
+    print(f"{LT}{H * (total_width - 2)}{RT}")
+    
+    # Column headers
+    header = f"{V}  {'Metric':<{label_width}} {VL} {'Model':^8} {VL} {'Baseline':^8} {VL} {'Change':^10} {VL} {'Winner':^8} {V}"
+    print(header)
+    
+    print(f"{LT}{HL * (label_width + 2)}{X}{HL * 10}{X}{HL * 10}{X}{HL * 12}{X}{HL * 10}{RT}")
+>>>>>>> origin/dev
     
     # Data rows
     for row in rows:
@@ -597,24 +646,42 @@ def print_baseline_comparison_box(
         baseline_str = f"{row['baseline']:.4f}" if isinstance(row['baseline'], float) else str(row['baseline'])
         
         line = f"{V}  {row['label']:<{label_width}} {VL} {model_str:^8} {VL} {baseline_str:^8} {VL} {row['improvement']:^10} {VL} {row['winner']:^8} {V}"
+<<<<<<< HEAD
         logger.info(line)
     
     # Footer
     logger.info(f"{LT}{H * (total_width - 2)}{RT}")
+=======
+        print(line)
+    
+    # Footer
+    print(f"{LT}{H * (total_width - 2)}{RT}")
+>>>>>>> origin/dev
     
     # Primary metric note
     if primary_metric:
         note = "★ = Primary metric for this task"
+<<<<<<< HEAD
         logger.info(f"{V}  {note:<{total_width - 4}}{V}")
+=======
+        print(f"{V}  {note:<{total_width - 4}}{V}")
+>>>>>>> origin/dev
     
     # Summary
     if total > 0:
         result = "MODEL WINS" if wins > total / 2 else "BASELINE WINS"
         summary = f"Result: {result} on {wins}/{total} metrics"
+<<<<<<< HEAD
         logger.info(f"{V}  {summary:<{total_width - 4}}{V}")
     
     logger.info(f"{BL}{H * (total_width - 2)}{BR}")
     logger.info("")
+=======
+        print(f"{V}  {summary:<{total_width - 4}}{V}")
+    
+    print(f"{BL}{H * (total_width - 2)}{BR}")
+    print()
+>>>>>>> origin/dev
 
 
 def add_baseline_args(parser: "argparse.ArgumentParser") -> None:
@@ -637,6 +704,7 @@ def add_baseline_args(parser: "argparse.ArgumentParser") -> None:
         action="store_true",
         help="Skip baseline evaluation",
     )
+<<<<<<< HEAD
 
 
 def create_imbalance_baselines(random_state: int = 42) -> ClassificationBaseline:
@@ -763,3 +831,5 @@ def print_dual_baseline_comparison(
     logger.info(f"{V}  {summary:<{total_width - 4}}{V}")
     logger.info(f"{BL}{H * (total_width - 2)}{BR}")
     logger.info("")
+=======
+>>>>>>> origin/dev

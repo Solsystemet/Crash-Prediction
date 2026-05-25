@@ -13,6 +13,7 @@ import logging
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
+<<<<<<< HEAD
 from api.config import (
     MODEL_REGISTRY,
     DEFAULT_MODEL,
@@ -21,6 +22,9 @@ from api.config import (
     get_all_possible_models,
     refresh_model_registry,
 )
+=======
+from api.config import MODEL_REGISTRY, DEFAULT_MODEL, FEATURE_OPTIONS, MODELS_DIR
+>>>>>>> origin/dev
 from api.models import (
     PredictionRequest,
     PredictionResponse,
@@ -47,9 +51,12 @@ from api.models import (
     RocComparisonResponse,
     ModelComparisonResponse,
     ModelComparisonResult,
+<<<<<<< HEAD
     AvailableModelInfo,
     AvailableModelsResponse,
     DatasetConfigResponse,
+=======
+>>>>>>> origin/dev
 )
 from api.prediction import (
     predict,
@@ -67,8 +74,11 @@ from api.accuracy_service import (
     get_all_models_roc_data,
 )
 from api.chicago_client import ChicagoAPIError
+<<<<<<< HEAD
 from api.middleware import setup_middleware, setup_request_context_logging
 from api.metrics import metrics_router
+=======
+>>>>>>> origin/dev
 
 logging.basicConfig(
     level=logging.INFO,
@@ -76,10 +86,13 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+<<<<<<< HEAD
 # Add request context to all log messages
 setup_request_context_logging()
 logger = logging.getLogger(__name__)
 
+=======
+>>>>>>> origin/dev
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -116,12 +129,15 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+<<<<<<< HEAD
 # Add observability middleware (request ID, logging, latency tracking)
 setup_middleware(app)
 
 # Include metrics endpoints
 app.include_router(metrics_router)
 
+=======
+>>>>>>> origin/dev
 
 @app.get("/", tags=["Root"])
 async def root():
@@ -144,6 +160,7 @@ async def health_check():
     )
 
 
+<<<<<<< HEAD
 @app.post("/api/reload-model", tags=["Model"])
 async def reload_model(model_name: str | None = None):
     """Force reload the model from disk, clearing any cached version.
@@ -160,6 +177,8 @@ async def reload_model(model_name: str | None = None):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+=======
+>>>>>>> origin/dev
 @app.post(
     "/api/predict",
     response_model=PredictionResponse
@@ -268,6 +287,7 @@ async def get_feature_options():
     return FeatureOptionsResponse(**FEATURE_OPTIONS)
 
 
+<<<<<<< HEAD
 @app.get("/api/models", response_model=AvailableModelsResponse, tags=["Models"])
 async def list_models(include_unavailable: bool = False):
     """List available prediction models with dataset configuration.
@@ -336,6 +356,23 @@ async def refresh_models():
         "message": f"Model registry refreshed: {len(MODEL_REGISTRY)} models found",
         "models": list(MODEL_REGISTRY.keys()),
     }
+=======
+@app.get("/api/models", response_model=list[ModelInfoResponse], tags=["Models"])
+async def list_models():
+    """List available prediction models.
+
+    Returns information about all models in the registry.
+    This endpoint supports future model selection functionality.
+    """
+    return [
+        ModelInfoResponse(
+            name=info.name,
+            description=info.description,
+            model_type=info.model_type,
+        )
+        for info in MODEL_REGISTRY.values()
+    ]
+>>>>>>> origin/dev
 
 
 # ============================================================================

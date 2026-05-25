@@ -2,6 +2,7 @@
 
 This module provides a centralized configuration for available models
 and their paths, making it easy to add new models in the future.
+<<<<<<< HEAD
 
 Supports dynamic discovery of models trained with different dataset combinations:
 - Crash data (always included)
@@ -16,6 +17,12 @@ from pathlib import Path
 from dataclasses import dataclass, field
 
 logger = logging.getLogger(__name__)
+=======
+"""
+
+from pathlib import Path
+from dataclasses import dataclass
+>>>>>>> origin/dev
 
 # Project root directory
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -25,6 +32,7 @@ MODELS_DIR = PROJECT_ROOT / "models" / "trained"
 
 
 @dataclass
+<<<<<<< HEAD
 class DatasetConfig:
     """Configuration for which datasets are included in a model.
     
@@ -85,12 +93,15 @@ ALL_DATASET_CONFIGS = [
 
 
 @dataclass
+=======
+>>>>>>> origin/dev
 class ModelInfo:
     """Information about an available model."""
 
     name: str
     path: Path
     description: str
+<<<<<<< HEAD
     model_type: str  # "simplified", "hierarchical", "zones", etc.
     datasets: DatasetConfig = field(default_factory=DatasetConfig)
     is_available: bool = True  # Whether the model exists on disk
@@ -307,13 +318,49 @@ def refresh_model_registry() -> None:
     MODEL_REGISTRY = discover_models()
     logger.info(f"Model registry refreshed: {len(MODEL_REGISTRY)} models found")
 
+=======
+    model_type: str  # "simplified" or "hierarchical"
+
+
+# Registry of available models
+MODEL_REGISTRY: dict[str, ModelInfo] = {
+    "simplified_3class": ModelInfo(
+        name="Simplified 3-Class",
+        path=MODELS_DIR / "simplified_3class",
+        description="3-class severity prediction (NO_INJURY, MINOR, SEVERE)",
+        model_type="simplified",
+    ),
+    "hierarchical_5class": ModelInfo(
+        name="Hierarchical 5-Class",
+        path=MODELS_DIR / "hierarchical_5class",
+        description="5-class hierarchical severity prediction with detailed injury levels",
+        model_type="hierarchical",
+    ),
+    "simplified_zones": ModelInfo(
+        name="Zone-Based Severity",
+        path=MODELS_DIR / "simplified_zones",
+        description="Geographic zone-aware 3-class severity prediction",
+        model_type="zones",
+    ),
+    "regression_daily": ModelInfo(
+        name="Crash Count Regression",
+        path=MODELS_DIR / "regression_daily",
+        description="Predict expected number of crashes per day",
+        model_type="regression",
+    ),
+}
+
+>>>>>>> origin/dev
 # Default model to use
 DEFAULT_MODEL = "simplified_3class"
 
 # Model type to registry key mapping
 MODEL_TYPE_REGISTRY = {
     "simplified": "simplified_3class",
+<<<<<<< HEAD
     "simple": "simple_rf",
+=======
+>>>>>>> origin/dev
     "hierarchical": "hierarchical_5class",
     "zones": "simplified_zones",
     "regression": "regression_daily",
