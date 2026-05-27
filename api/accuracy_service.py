@@ -27,6 +27,7 @@ from api.prediction import (
     predict,
     predict_hierarchical,
     predict_zones,
+    predict_simple,
     model_manager,
 )
 from api.models import PredictionRequest
@@ -46,6 +47,19 @@ CLASS_LABELS_5CLASS = [
 
 # Backwards compatibility
 CLASS_LABELS = CLASS_LABELS_3CLASS
+
+# Base models to compare (excludes dataset variant suffixes like _crash_vehicle_people)
+# This matches how training/compare_all_models.py works
+BASE_MODEL_NAMES = {
+    "simplified_3class",
+    "simple_rf",
+    "simplified_zones",
+    "tuned_lgbm",
+    "tuned_xgb",
+    "tuned_catboost",
+    "tuned_rf",
+    "tabnet",
+}
 
 
 def get_class_labels_for_model(model_name: str) -> list[str]:
@@ -292,8 +306,8 @@ def compute_roc_curves(
     curves = []
     colors = ["#3b82f6", "#f97316", "#22c55e", "#ef4444"]  # blue, orange, green, red
 
-    # For 3-class models (simplified, zones)
-    if model_type in ("simplified", "zones"):
+    # For 3-class models (simplified, zones, simple, tuned, deep)
+    if model_type in ("simplified", "zones", "simple", "tuned", "deep"):
         # L1: Injury (MINOR or SEVERE) vs No Injury
         # P(injury) = P(minor) + P(severe) = 1 - P(no_injury)
         l1_y_true = []
@@ -732,6 +746,16 @@ def evaluate_accuracy(
                     "minor": response.probabilities.minor,
                     "severe": response.probabilities.severe,
                 }
+            elif model_type in ("simple", "tuned", "deep"):
+                # Simple/tuned/deep models all use same prediction interface
+                response = predict_simple(request, model_name)
+                predicted = response.prediction
+                confidence = response.confidence
+                probabilities = {
+                    "no_injury": response.probabilities.no_injury,
+                    "minor": response.probabilities.minor,
+                    "severe": response.probabilities.severe,
+                }
             else:
                 # Skip unsupported model types (e.g., regression)
                 continue
@@ -798,7 +822,10 @@ def evaluate_all_models(
     start_date: datetime | None = None,
     end_date: datetime | None = None,
 ) -> dict[str, Any]:
-    """Evaluate all classification models for comparison.
+    """Evaluate all classification models on the SAME data for fair comparison.
+
+    Fetches data once and evaluates all models on the identical dataset,
+    similar to how training/compare_all_models.py works.
 
     Args:
         days: Number of days back to fetch data (used if start_date/end_date not provided)
@@ -815,32 +842,184 @@ def evaluate_all_models(
     else:
         time_range_days = days or 7
 
-    # Only compare classification models, not regression
+    # Only compare BASE classification models (no dataset suffix variants)
     classification_models = [
         name
-        for name, info in MODEL_REGISTRY.items()
-        if info.model_type in ("simplified", "hierarchical", "zones")
+        for name in MODEL_REGISTRY.keys()
+        if name in BASE_MODEL_NAMES and MODEL_REGISTRY[name].is_available
     ]
 
+    logger.info(
+        f"Starting model comparison: {len(classification_models)} models, "
+        f"days={days}, max_crashes={max_crashes}"
+    )
+
+    # =========================================================================
+    # STEP 1: Fetch data ONCE for all models
+    # =========================================================================
+    try:
+        data = fetch_crash_data_for_accuracy(
+            days=days,
+            max_crashes=max_crashes,
+            start_date=start_date,
+            end_date=end_date,
+        )
+    except ChicagoAPIError as e:
+        logger.error(f"Failed to fetch data from Chicago API: {e}")
+        raise RuntimeError(f"Failed to fetch crash data: {e}")
+
+    crashes = data["crashes"]
+    if not crashes:
+        logger.warning("No crash data fetched, returning empty comparison")
+        return {
+            "models": {},
+            "time_range_days": time_range_days,
+            "max_crashes": max_crashes,
+            "computed_at": datetime.now().isoformat(),
+        }
+
+    # =========================================================================
+    # STEP 2: Transform crashes to prediction requests ONCE
+    # =========================================================================
+    transformed = transform_all_crashes(
+        crashes=crashes,
+        people=data["people"],
+        vehicles=data["vehicles"],
+        weather=data["weather"],
+    )
+
+    if not transformed:
+        logger.warning("No crashes could be transformed, returning empty comparison")
+        return {
+            "models": {},
+            "time_range_days": time_range_days,
+            "max_crashes": max_crashes,
+            "computed_at": datetime.now().isoformat(),
+        }
+
+    logger.info(f"Transformed {len(transformed)} crashes for comparison")
+
+    # =========================================================================
+    # STEP 3: Evaluate each model on the SAME transformed data
+    # =========================================================================
     results = {}
+    class_labels = CLASS_LABELS_3CLASS
 
     for model_name in classification_models:
         try:
-            logger.info(f"Evaluating model: {model_name}")
-            result = evaluate_accuracy(
-                days=days,
-                max_crashes=max_crashes,
-                model_name=model_name,
-                start_date=start_date,
-                end_date=end_date,
-            )
-            results[model_name] = {
-                "model_name": model_name,
-                "display_name": MODEL_REGISTRY[model_name].name,
-                "model_type": MODEL_REGISTRY[model_name].model_type,
-                "metrics": result["metrics"],
-                "status": "success",
-            }
+            model_info = MODEL_REGISTRY[model_name]
+            model_type = model_info.model_type
+
+            logger.info(f"Evaluating model: {model_name} (type={model_type})")
+
+            # Load the model
+            try:
+                model_manager.load_model(model_name)
+            except ValueError as e:
+                raise RuntimeError(
+                    f"Model '{model_name}' not available. Please train the model first."
+                ) from e
+
+            # Make predictions for this model
+            y_true = []
+            y_pred = []
+            predictions = []
+
+            for crash, request, ground_truth in transformed:
+                try:
+                    # Get prediction based on model type
+                    probabilities = {}
+
+                    if model_type == "simplified":
+                        response = predict(request, model_name)
+                        predicted = response.prediction
+                        confidence = response.confidence
+                        probabilities = {
+                            "no_injury": response.probabilities.no_injury,
+                            "minor": response.probabilities.minor,
+                            "severe": response.probabilities.severe,
+                        }
+                    elif model_type == "zones":
+                        # Zone model requires lat/lng
+                        if request.latitude is None or request.longitude is None:
+                            continue
+                        response = predict_zones(request)
+                        predicted = response.prediction
+                        confidence = response.confidence
+                        probabilities = {
+                            "no_injury": response.probabilities.no_injury,
+                            "minor": response.probabilities.minor,
+                            "severe": response.probabilities.severe,
+                        }
+                    elif model_type in ("simple", "tuned", "deep"):
+                        # Simple/tuned/deep models all use same prediction interface
+                        response = predict_simple(request, model_name)
+                        predicted = response.prediction
+                        confidence = response.confidence
+                        probabilities = {
+                            "no_injury": response.probabilities.no_injury,
+                            "minor": response.probabilities.minor,
+                            "severe": response.probabilities.severe,
+                        }
+                    else:
+                        continue
+
+                    y_true.append(ground_truth)
+                    y_pred.append(predicted)
+
+                    # Parse crash date
+                    crash_dt = parse_crash_datetime(crash)
+
+                    predictions.append(
+                        {
+                            "crash_record_id": crash.get("crash_record_id", ""),
+                            "crash_date": crash_dt.isoformat() if crash_dt else None,
+                            "predicted_severity": predicted,
+                            "actual_severity": ground_truth,
+                            "is_correct": predicted == ground_truth,
+                            "confidence": confidence,
+                            "probabilities": probabilities,
+                        }
+                    )
+                except Exception as e:
+                    logger.debug(f"Failed to predict for crash with {model_name}: {e}")
+                    continue
+
+            # Compute metrics for this model
+            if predictions:
+                confusion_matrix = compute_confusion_matrix(y_true, y_pred, labels=class_labels)
+                class_metrics = compute_class_metrics(confusion_matrix, labels=class_labels)
+                overall_accuracy = compute_overall_accuracy(y_true, y_pred)
+                f1_scores = compute_f1_scores(class_metrics, labels=class_labels)
+
+                metrics = {
+                    "overall_accuracy": overall_accuracy,
+                    "sample_count": len(predictions),
+                    "per_class_metrics": class_metrics,
+                    "confusion_matrix": confusion_matrix,
+                    "class_labels": class_labels,
+                    "time_range_days": time_range_days,
+                    "computed_at": datetime.now().isoformat(),
+                    "f1_macro": f1_scores["f1_macro"],
+                    "f1_micro": f1_scores["f1_micro"],
+                    "model_name": model_name,
+                }
+
+                logger.info(
+                    f"  {model_name}: accuracy={overall_accuracy:.2%}, "
+                    f"f1_macro={f1_scores['f1_macro']:.4f}, samples={len(predictions)}"
+                )
+
+                results[model_name] = {
+                    "model_name": model_name,
+                    "display_name": model_info.name,
+                    "model_type": model_type,
+                    "metrics": metrics,
+                    "status": "success",
+                }
+            else:
+                raise RuntimeError("No predictions could be made")
+
         except Exception as e:
             logger.warning(f"Failed to evaluate {model_name}: {e}")
             results[model_name] = {
@@ -851,6 +1030,8 @@ def evaluate_all_models(
                 "status": "error",
                 "error": str(e),
             }
+
+    logger.info(f"Model comparison complete: {len(results)} models evaluated")
 
     return {
         "models": results,
@@ -942,11 +1123,11 @@ def get_all_models_roc_data(
     else:
         time_range_days = days or 7
 
-    # Only compare classification models, not regression
+    # Only compare BASE classification models (no dataset suffix variants)
     classification_models = [
         name
-        for name, info in MODEL_REGISTRY.items()
-        if info.model_type in ("simplified", "hierarchical", "zones")
+        for name in MODEL_REGISTRY.keys()
+        if name in BASE_MODEL_NAMES and MODEL_REGISTRY[name].is_available
     ]
 
     results = {}

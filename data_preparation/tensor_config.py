@@ -275,3 +275,145 @@ MODERATE_SEVERITY_CONFIG = TensorConfig(
     random_seed=42,
 )
 """Moderate config with triple merge data but fewer engineered features."""
+
+
+# =============================================================================
+# Data Source-Specific Configurations
+# =============================================================================
+# These configs are designed to match specific DataSourceConfig presets
+# from triple_merge.py. Use matching configs for consistent feature selection.
+
+CRASH_ONLY_SEVERITY_CONFIG = TensorConfig(
+    target_column="MOST_SEVERE_INJURY",
+    feature_columns=_BASE_CATEGORICAL_COLS + _BASE_NUMERICAL_COLS,
+    categorical_columns=_BASE_CATEGORICAL_COLS,
+    numerical_columns=_BASE_NUMERICAL_COLS,
+    task_type="classification",
+    train_ratio=0.7,
+    val_ratio=0.15,
+    test_ratio=0.15,
+    random_seed=42,
+)
+"""
+Crash-only severity prediction config.
+Use with: triple_merge(use_vehicles=False, use_people=False, use_weather=False)
+Or: get_model_data(CRASH_ONLY)
+"""
+
+
+CRASH_VEHICLES_SEVERITY_CONFIG = TensorConfig(
+    target_column="MOST_SEVERE_INJURY",
+    feature_columns=(
+        _BASE_CATEGORICAL_COLS +
+        _BASE_NUMERICAL_COLS +
+        _VEHICLE_CATEGORICAL +
+        _VEHICLE_NUMERICAL
+    ),
+    categorical_columns=_BASE_CATEGORICAL_COLS + _VEHICLE_CATEGORICAL,
+    numerical_columns=_BASE_NUMERICAL_COLS + _VEHICLE_NUMERICAL,
+    task_type="classification",
+    train_ratio=0.7,
+    val_ratio=0.15,
+    test_ratio=0.15,
+    random_seed=42,
+)
+"""
+Crash + vehicles severity prediction config.
+Use with: triple_merge(use_vehicles=True, use_people=False, use_weather=False)
+Or: get_model_data(CRASH_WITH_VEHICLES)
+"""
+
+
+CRASH_PEOPLE_SEVERITY_CONFIG = TensorConfig(
+    target_column="MOST_SEVERE_INJURY",
+    feature_columns=(
+        _BASE_CATEGORICAL_COLS +
+        _BASE_NUMERICAL_COLS +
+        _PEOPLE_NUMERICAL
+    ),
+    categorical_columns=_BASE_CATEGORICAL_COLS,
+    numerical_columns=_BASE_NUMERICAL_COLS + _PEOPLE_NUMERICAL,
+    task_type="classification",
+    train_ratio=0.7,
+    val_ratio=0.15,
+    test_ratio=0.15,
+    random_seed=42,
+)
+"""
+Crash + people severity prediction config.
+Use with: triple_merge(use_vehicles=False, use_people=True, use_weather=False)
+Or: get_model_data(CRASH_WITH_PEOPLE)
+"""
+
+
+CRASH_WEATHER_SEVERITY_CONFIG = TensorConfig(
+    target_column="MOST_SEVERE_INJURY",
+    feature_columns=(
+        _BASE_CATEGORICAL_COLS +
+        _BASE_NUMERICAL_COLS +
+        _WEATHER_NUMERICAL
+    ),
+    categorical_columns=_BASE_CATEGORICAL_COLS,
+    numerical_columns=_BASE_NUMERICAL_COLS + _WEATHER_NUMERICAL,
+    task_type="classification",
+    train_ratio=0.7,
+    val_ratio=0.15,
+    test_ratio=0.15,
+    random_seed=42,
+)
+"""
+Crash + weather severity prediction config.
+Use with: triple_merge(use_vehicles=False, use_people=False, use_weather=True)
+Or: get_model_data(CRASH_WITH_WEATHER)
+"""
+
+
+CRASH_VEHICLES_PEOPLE_SEVERITY_CONFIG = TensorConfig(
+    target_column="MOST_SEVERE_INJURY",
+    feature_columns=(
+        _BASE_CATEGORICAL_COLS +
+        _BASE_NUMERICAL_COLS +
+        _VEHICLE_CATEGORICAL +
+        _VEHICLE_NUMERICAL +
+        _PEOPLE_NUMERICAL
+    ),
+    categorical_columns=_BASE_CATEGORICAL_COLS + _VEHICLE_CATEGORICAL,
+    numerical_columns=_BASE_NUMERICAL_COLS + _VEHICLE_NUMERICAL + _PEOPLE_NUMERICAL,
+    task_type="classification",
+    train_ratio=0.7,
+    val_ratio=0.15,
+    test_ratio=0.15,
+    random_seed=42,
+)
+"""
+Crash + vehicles + people severity prediction config (no weather).
+Use with: triple_merge(use_vehicles=True, use_people=True, use_weather=False)
+Or: get_model_data(CRASH_VEHICLES_PEOPLE)
+"""
+
+
+# =============================================================================
+# Helper function for dynamic feature selection
+# =============================================================================
+
+def get_available_features(df) -> dict[str, list[str]]:
+    """Detect which feature columns are available in a DataFrame.
+    
+    Useful for dynamically building feature lists based on which data
+    sources were included in the merge.
+    
+    Args:
+        df: DataFrame from triple_merge() or get_model_data().
+        
+    Returns:
+        Dictionary with keys 'categorical', 'numerical', and 'all_features',
+        containing lists of available column names.
+    """
+    available_categorical = [c for c in _ENHANCED_CATEGORICAL_COLS if c in df.columns]
+    available_numerical = [c for c in _ENHANCED_NUMERICAL_COLS if c in df.columns]
+    
+    return {
+        "categorical": available_categorical,
+        "numerical": available_numerical,
+        "all_features": available_categorical + available_numerical,
+    }
