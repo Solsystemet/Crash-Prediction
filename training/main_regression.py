@@ -45,7 +45,7 @@ from data_preparation.time_series_features import (
     FeatureConfig,
     engineer_time_series_features,
 )
-from data_preparation.triple_merge import triple_merge
+from data_preparation.triple_merge import triple_merge, DataSourceConfig
 from splice.k_means import LocationClusterer
 
 from training.regression.config import RegressionConfig, EnsembleConfig
@@ -65,12 +65,23 @@ from training.baselines import (
     print_baseline_comparison_box,
     add_baseline_args,
 )
+from training.metrics_schema import export_model_vs_baselines_csv
+from utils.logging_config import setup_logging
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s",
-)
-logger = logging.getLogger(__name__)
+logger = setup_logging(__name__)
+
+
+def get_output_dir(granularity: str, config: DataSourceConfig) -> Path:
+    """Get output directory based on granularity and data source configuration.
+    
+    Args:
+        granularity: Time granularity ('hourly', 'daily', 'weekly').
+        config: Data source configuration specifying which datasets are included.
+        
+    Returns:
+        Path to model output directory.
+    """
+    return PROJECT_ROOT / "models" / "trained" / f"regression_{granularity}_{config.get_name_suffix()}"
 
 
 def run_regression_pipeline(
@@ -81,25 +92,16 @@ def run_regression_pipeline(
     batch_size: int = 64,
     save_model: bool = True,
     with_baseline: bool = True,
-) -> dict:
-    """Run the full crash count regression pipeline.
-
-    Args:
-        granularity: Time bucket size ('hourly', 'daily', 'weekly').
-        n_zones: Number of geographic zones for clustering.
-        sample_size: Optional limit on dataset size for faster experimentation.
-        epochs: Maximum training epochs.
-        batch_size: Training batch size.
-        save_model: Whether to save the trained model.
+    data_config: DataSourceConfig | None = None,
 
     Returns:
         Dictionary of evaluation results.
     """
-    logger.info("=" * 60)
-    logger.info("CRASH COUNT REGRESSION PIPELINE")
-    logger.info("=" * 60)
-    logger.info(f"Time granularity: {granularity}")
-    logger.info(f"Number of zones: {n_zones}")
+    if data_config is None:
+        data_config = DataSourceConfig(use_vehicles=False, use_people=False, use_weather=False)
+    
+    output_dir = get_output_dir(granularity, data_config)
+    
     if sample_size:
         logger.info(f"Sample size: {sample_size}")
 
@@ -118,7 +120,7 @@ def run_regression_pipeline(
 
     # Step 1: Load and merge data
     logger.info("\n[1/7] Loading and merging data...")
-    df = triple_merge()
+    df = triple_merge(config=data_config, verbose=False)
     logger.info(f"Merged dataset shape: {df.shape}")
 
     # Sample if specified
@@ -260,20 +262,15 @@ def run_regression_pipeline(
             task_type="regression",
         )
 
-    # Summary
-    logger.info("\n" + "=" * 60)
-    logger.info("SUMMARY")
-    logger.info("=" * 60)
-    logger.info(f"Granularity: {granularity}")
-    logger.info(f"Zones: {n_zones}")
-    logger.info(f"Test MAE: {results['overall']['mae']:.4f}")
-    logger.info(f"Test RMSE: {results['overall']['rmse']:.4f}")
-    logger.info(f"Test R²: {results['overall']['r2']:.4f}")
+        # Export baseline comparison CSV
+        export_model_vs_baselines_csv(
+            model_name="regression_ensemble",
+            model_metrics=model_metrics,
+            baseline_results=baseline_results,
+            output_dir=output_dir,
+        )
+        logger.info(f"Saved timestamped baseline comparison to {output_dir}")
 
-    # Save model
-    if save_model:
-        model_dir = PROJECT_ROOT / "models" / "trained" / f"regression_{granularity}"
-        ensemble.save(model_dir)
 
         # Save additional metadata for predictor
         predictor_metadata = {
@@ -281,9 +278,9 @@ def run_regression_pipeline(
             "time_config": time_config,
             "zone_centroids": zone_centroids,
         }
-        joblib.dump(predictor_metadata, model_dir / "predictor_metadata.joblib")
+        joblib.dump(predictor_metadata, output_dir / "predictor_metadata.joblib")
 
-        logger.info(f"Model saved to {model_dir}")
+        logger.info(f"Model saved to {output_dir}")
 
         # Save plots
         plots_dir = PROJECT_ROOT / "models" / "plots"
@@ -302,7 +299,7 @@ def run_regression_pipeline(
             save_path=plots_dir / f"regression_{granularity}_zones.png",
         )
 
-        report = generate_report(results, save_path=model_dir / "evaluation_report.txt")
+        report = generate_report(results, save_path=output_dir / "evaluation_report.txt")
 
     return {
         "overall": results["overall"],
@@ -357,8 +354,31 @@ if __name__ == "__main__":
         help="Don't save the trained model",
     )
     add_baseline_args(parser)
+    # Data source configuration flags
+    parser.add_argument(
+        "--include-vehicle",
+        action="store_true",
+        help="Include vehicle data (count, age, types, speed violations)",
+    )
+    parser.add_argument(
+        "--include-people",
+        action="store_true",
+        help="Include people data (demographics, BAC, safety equipment)",
+    )
+    parser.add_argument(
+        "--include-weather",
+        action="store_true",
+        help="Include weather data (temperature, humidity, rain, wind)",
+    )
 
     args = parser.parse_args()
+    
+    # Build data source configuration from CLI flags
+    data_config = DataSourceConfig(
+        use_vehicles=args.include_vehicle,
+        use_people=args.include_people,
+        use_weather=args.include_weather,
+    )
 
     results = run_regression_pipeline(
         granularity=args.granularity,
@@ -368,6 +388,7 @@ if __name__ == "__main__":
         batch_size=args.batch_size,
         save_model=not args.no_save,
         with_baseline=not args.no_baseline,
+        data_config=data_config,
     )
 
     # Print final summary

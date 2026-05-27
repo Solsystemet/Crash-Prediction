@@ -45,7 +45,7 @@ from data_preparation.feature_engineering import (
     add_ordinal_severity,
     engineer_all_features,
 )
-from data_preparation.triple_merge import triple_merge
+from data_preparation.triple_merge import triple_merge, DataSourceConfig
 
 from training.hierarchical.config import SimplifiedTreeConfig
 from training.hierarchical.simplified_targets import (
@@ -63,15 +63,29 @@ from training.baselines import (
     ClassificationBaseline,
     compare_to_baseline,
     log_comparison,
-    print_baseline_comparison_box,
+    print_dual_baseline_comparison,
     add_baseline_args,
+    create_imbalance_baselines,
 )
+from training.metrics_schema import export_model_vs_baselines_csv
+from utils.logging_config import setup_logging
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s",
-)
-logger = logging.getLogger(__name__)
+logger = setup_logging(__name__)
+
+# Base model name for output directory
+MODEL_NAME = "simplified_3class"
+
+
+def get_output_dir(config: DataSourceConfig) -> Path:
+    """Get output directory based on data source configuration.
+    
+    Args:
+        config: Data source configuration specifying which datasets are included.
+        
+    Returns:
+        Path to model output directory.
+    """
+    return PROJECT_ROOT / "models" / "trained" / f"{MODEL_NAME}_{config.get_name_suffix()}"
 
 
 def stratified_sample_severe(
@@ -313,22 +327,21 @@ def run_simplified_pipeline(
     l2_resampling_method: str | None = None,
     l2_target_recall: float | None = None,
     with_baseline: bool = True,
-) -> dict:
-    """Run the simplified 3-class classification pipeline.
-
-    Args:
-        sample_size: Optional limit on dataset size for faster experimentation.
-        feature_filter: Feature filtering mode ("none" or "drop-low").
-        l2_weight_multiplier: Override for L2 class weight multiplier.
-        l2_resampling_method: Override for L2 resampling method ('borderline' or 'adasyn').
-        l2_target_recall: Override for L2 target recall during threshold optimization.
+    data_config: DataSourceConfig | None = None,
 
     Returns:
         Dictionary of evaluation results.
     """
+    if data_config is None:
+        data_config = DataSourceConfig(use_vehicles=False, use_people=False, use_weather=False)
+    
+    output_dir = get_output_dir(data_config)
+    
     logger.info("=" * 60)
     logger.info("SIMPLIFIED 3-CLASS CLASSIFICATION PIPELINE")
     logger.info("=" * 60)
+    logger.info(f"Data configuration: {data_config}")
+    logger.info(f"Output directory: {output_dir}")
 
     config = SimplifiedTreeConfig(sample_size=sample_size)
 
@@ -344,7 +357,7 @@ def run_simplified_pipeline(
 
     # Load and merge data
     logger.info("\n[1/6] Loading and merging data...")
-    df = triple_merge()
+    df = triple_merge(config=data_config, verbose=False)
     logger.info(f"Merged dataset shape: {df.shape}")
 
     # Sample if specified - use stratified sampling for SEVERE cases
@@ -451,19 +464,16 @@ def run_simplified_pipeline(
     logger.info("\n[6/6] Evaluating on test set...")
     results = evaluate_simplified(clf, X_test, targets_test)
 
-    # Baseline evaluation
+    # Baseline evaluation (coin flip baselines for imbalanced data)
     if with_baseline:
-        baseline = ClassificationBaseline(
-            strategies=["most_frequent", "stratified"],
-            random_state=config.random_state,
-        )
+        baseline = create_imbalance_baselines(random_state=config.random_state)
         baseline.fit(targets_train.y_simplified)
         baseline_results = baseline.evaluate(
             targets_test.y_simplified,
             class_names=SIMPLIFIED_CLASS_NAMES,
         )
 
-        # Compare model to baseline
+        # Compare model to both baselines
         model_metrics = {
             "accuracy": results["accuracy"],
             "f1_macro": results["f1_macro"],
@@ -472,20 +482,12 @@ def run_simplified_pipeline(
         }
         comparison = compare_to_baseline(model_metrics, baseline_results)
 
-        # Print comparison box (use stratified baseline since we stratified-sample the training data)
-        print_baseline_comparison_box(
+        # Print comparison against both baselines
+        print_dual_baseline_comparison(
             model_metrics=model_metrics,
             baseline_results=baseline_results,
-            comparison=comparison,
-            model_name="Simplified Classifier",
-            baseline_strategy="stratified",
+            model_name="Simplified",
             primary_metric="recall_SEVERE",
-            metric_labels={
-                "accuracy": "Accuracy",
-                "f1_macro": "F1 Macro",
-                "f1_weighted": "F1 Weighted",
-                "recall_SEVERE": "SEVERE Recall",
-            },
         )
 
         # Store baseline results
@@ -495,50 +497,15 @@ def run_simplified_pipeline(
         }
         results["baseline_comparison"] = comparison
 
-    # Summary
-    logger.info("\n" + "=" * 60)
-    logger.info("SUMMARY")
-    logger.info("=" * 60)
-    logger.info(f"3-Class Accuracy: {results['accuracy']:.4f}")
-    logger.info(f"Macro F1: {results['f1_macro']:.4f}")
-    logger.info(f"Micro F1: {results['f1_micro']:.4f}")
-    for class_name in SIMPLIFIED_CLASS_NAMES:
-        key = f"recall_{class_name}"
-        if key in results:
-            logger.info(f"  {class_name} Recall: {results[key]:.4f}")
+        # Export baseline comparison CSV
+        export_model_vs_baselines_csv(
+            model_name="simplified_3class",
+            model_metrics=model_metrics,
+            baseline_results=baseline_results,
+            output_dir=output_dir,
+        )
+        logger.info(f"Saved timestamped baseline comparison to {output_dir}")
 
-    # Generate ROC curves
-    logger.info("\nGenerating ROC curves...")
-    plots_dir = PROJECT_ROOT / "models" / "plots"
-    plots_dir.mkdir(parents=True, exist_ok=True)
-
-    # Get probabilities for ROC
-    l1_proba, l2_proba = clf.predict_proba(X_test)
-    injury_mask = targets_test.y_injury == 1
-
-    y_true_levels = {
-        "L1 (INJURY vs NO_INJURY)": targets_test.y_injury,
-    }
-    y_proba_levels = {
-        "L1 (INJURY vs NO_INJURY)": l1_proba,
-    }
-
-    # Add L2 if we have injury cases
-    if np.sum(injury_mask) > 0:
-        y_true_levels["L2 (SEVERE vs MINOR)"] = targets_test.y_severe[injury_mask]
-        y_proba_levels["L2 (SEVERE vs MINOR)"] = l2_proba[injury_mask]
-
-    roc_path = plots_dir / "roc_curves_simplified.png"
-    auc_scores = plot_roc_curves(
-        y_true_levels=y_true_levels,
-        y_proba_levels=y_proba_levels,
-        save_path=roc_path,
-        title="ROC Curves - Simplified 3-Class Classifier",
-    )
-
-    # Export ROC data as JSON for frontend visualization
-    model_dir = PROJECT_ROOT / "models" / "trained" / "simplified_3class"
-    roc_json_path = model_dir / "roc_data.json"
     export_roc_data(
         y_true_levels=y_true_levels,
         y_proba_levels=y_proba_levels,
@@ -551,10 +518,115 @@ def run_simplified_pipeline(
         logger.info(f"  {level_name}: AUC = {auc:.4f}")
         results[f"auc_{level_name}"] = auc
 
+    # Generate additional evaluation plots
+    logger.info("\nGenerating additional evaluation plots...")
+    
+    # Confusion matrix heatmap
+    try:
+        from training.plotting.calibration import plot_calibration_curve
+        from training.plotting.confidence import plot_confidence_histogram
+        
+        # Confusion matrix heatmap
+        try:
+            import matplotlib.pyplot as plt
+            import seaborn as sns
+            
+            y_pred = clf.predict(X_test)
+            cm = confusion_matrix(targets_test.y_simplified, y_pred)
+            cm_normalized = cm.astype(float) / cm.sum(axis=1, keepdims=True)
+            
+            fig, ax = plt.subplots(figsize=(8, 6))
+            sns.heatmap(
+                cm_normalized, annot=True, fmt=".2%", cmap="Blues",
+                xticklabels=SIMPLIFIED_CLASS_NAMES,
+                yticklabels=SIMPLIFIED_CLASS_NAMES,
+                ax=ax,
+            )
+            ax.set_xlabel("Predicted")
+            ax.set_ylabel("True")
+            ax.set_title("Confusion Matrix - Simplified 3-Class")
+            plt.tight_layout()
+            cm_path = output_dir / "confusion_matrix.png"
+            plt.savefig(cm_path, dpi=150, bbox_inches="tight")
+            plt.close(fig)
+            logger.info(f"Confusion matrix saved to {cm_path}")
+        except Exception as e:
+            logger.warning(f"Could not generate confusion matrix plot: {e}")
+        
+        # Calibration curve for L1 (injury detection)
+        cal_path = output_dir / "calibration_L1.png"
+        plot_calibration_curve(
+            targets_test.y_injury, l1_proba, cal_path,
+            title="Calibration - L1 Injury Detection",
+        )
+        logger.info(f"Calibration curve (L1) saved to {cal_path}")
+        
+        # Calibration curve for L2 (severity) if we have injury cases
+        if np.sum(injury_mask) > 0:
+            cal_path_l2 = output_dir / "calibration_L2.png"
+            plot_calibration_curve(
+                targets_test.y_severe[injury_mask], l2_proba[injury_mask], cal_path_l2,
+                title="Calibration - L2 Severity",
+            )
+            logger.info(f"Calibration curve (L2) saved to {cal_path_l2}")
+        
+        # Prediction confidence distribution
+        # Calculate 3-class probabilities
+        p_no_injury = 1 - l1_proba
+        p_minor = l1_proba * (1 - l2_proba)
+        p_severe = l1_proba * l2_proba
+        all_proba = np.column_stack([p_no_injury, p_minor, p_severe])
+        max_conf = np.max(all_proba, axis=1)
+        
+        conf_path = output_dir / "confidence_distribution.png"
+        plot_confidence_histogram(
+            max_conf, conf_path,
+            title="Prediction Confidence Distribution",
+        )
+        logger.info(f"Confidence distribution saved to {conf_path}")
+        
+        # Per-class recall bar chart
+        try:
+            y_pred = clf.predict(X_test)
+            recalls = {}
+            for i, cls_name in enumerate(SIMPLIFIED_CLASS_NAMES):
+                mask = targets_test.y_simplified == i
+                if mask.sum() > 0:
+                    correct = ((targets_test.y_simplified == i) & (y_pred == i)).sum()
+                    recalls[cls_name] = correct / mask.sum()
+                else:
+                    recalls[cls_name] = 0.0
+            
+            fig, ax = plt.subplots(figsize=(8, 5))
+            y_pos = np.arange(len(SIMPLIFIED_CLASS_NAMES))
+            recall_values = [recalls[cls] for cls in SIMPLIFIED_CLASS_NAMES]
+            colors = ["#22c55e" if r >= 0.5 else "#f97316" if r >= 0.3 else "#ef4444" for r in recall_values]
+            
+            bars = ax.barh(y_pos, recall_values, color=colors, edgecolor="black", alpha=0.8)
+            for bar, val in zip(bars, recall_values):
+                ax.text(bar.get_width() + 0.02, bar.get_y() + bar.get_height() / 2, f"{val:.1%}", va="center")
+            
+            ax.set_yticks(y_pos)
+            ax.set_yticklabels(SIMPLIFIED_CLASS_NAMES)
+            ax.set_xlabel("Recall")
+            ax.set_title("Per-Class Recall - Simplified 3-Class")
+            ax.set_xlim(0, 1.1)
+            ax.axvline(x=0.5, color="gray", linestyle="--", alpha=0.5)
+            plt.tight_layout()
+            
+            recall_path = output_dir / "per_class_recall.png"
+            plt.savefig(recall_path, dpi=150, bbox_inches="tight")
+            plt.close(fig)
+            logger.info(f"Per-class recall plot saved to {recall_path}")
+        except Exception as e:
+            logger.warning(f"Could not generate recall plot: {e}")
+            
+    except ImportError as e:
+        logger.warning(f"Could not import plotting modules: {e}")
+
     # Save model
-    model_dir = PROJECT_ROOT / "models" / "trained" / "simplified_3class"
-    save_simplified_model(clf, str(model_dir))
-    logger.info(f"Model saved to {model_dir}")
+    save_simplified_model(clf, str(output_dir))
+    logger.info(f"Model saved to {output_dir}")
 
     return results
 
@@ -600,8 +672,31 @@ if __name__ == "__main__":
              "Higher values catch more severe cases but increase false positives.",
     )
     add_baseline_args(parser)
+    # Data source configuration flags
+    parser.add_argument(
+        "--include-vehicle",
+        action="store_true",
+        help="Include vehicle data (count, age, types, speed violations)",
+    )
+    parser.add_argument(
+        "--include-people",
+        action="store_true",
+        help="Include people data (demographics, BAC, safety equipment)",
+    )
+    parser.add_argument(
+        "--include-weather",
+        action="store_true",
+        help="Include weather data (temperature, humidity, rain, wind)",
+    )
 
     args = parser.parse_args()
+    
+    # Build data source configuration from CLI flags
+    data_config = DataSourceConfig(
+        use_vehicles=args.include_vehicle,
+        use_people=args.include_people,
+        use_weather=args.include_weather,
+    )
 
     results = run_simplified_pipeline(
         sample_size=args.sample,
@@ -610,6 +705,7 @@ if __name__ == "__main__":
         l2_resampling_method=args.l2_resampling,
         l2_target_recall=args.l2_target_recall,
         with_baseline=not args.no_baseline,
+        data_config=data_config,
     )
 
     print("\n" + "=" * 60)
