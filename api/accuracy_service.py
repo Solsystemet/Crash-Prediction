@@ -27,6 +27,7 @@ from api.prediction import (
     predict,
     predict_hierarchical,
     predict_zones,
+    predict_simple,
     model_manager,
 )
 from api.models import PredictionRequest
@@ -292,8 +293,8 @@ def compute_roc_curves(
     curves = []
     colors = ["#3b82f6", "#f97316", "#22c55e", "#ef4444"]  # blue, orange, green, red
 
-    # For 3-class models (simplified, zones)
-    if model_type in ("simplified", "zones"):
+    # For 3-class models (simplified, zones, simple, tuned, deep)
+    if model_type in ("simplified", "zones", "simple", "tuned", "deep"):
         # L1: Injury (MINOR or SEVERE) vs No Injury
         # P(injury) = P(minor) + P(severe) = 1 - P(no_injury)
         l1_y_true = []
@@ -732,6 +733,16 @@ def evaluate_accuracy(
                     "minor": response.probabilities.minor,
                     "severe": response.probabilities.severe,
                 }
+            elif model_type in ("simple", "tuned", "deep"):
+                # Simple/tuned/deep models all use same prediction interface
+                response = predict_simple(request, model_name)
+                predicted = response.prediction
+                confidence = response.confidence
+                probabilities = {
+                    "no_injury": response.probabilities.no_injury,
+                    "minor": response.probabilities.minor,
+                    "severe": response.probabilities.severe,
+                }
             else:
                 # Skip unsupported model types (e.g., regression)
                 continue
@@ -815,11 +826,15 @@ def evaluate_all_models(
     else:
         time_range_days = days or 7
 
-    # Only compare classification models, not regression
+    # Only compare base classification models (3-class), excluding:
+    # - regression models
+    # - hierarchical (5-class) models
+    # - dataset combination variants (e.g., simple_rf_crash, simplified_3class_crash_vehicle)
     classification_models = [
         name
         for name, info in MODEL_REGISTRY.items()
-        if info.model_type in ("simplified", "hierarchical", "zones")
+        if info.model_type in ("simplified", "zones", "simple", "tuned", "deep")
+        and "_crash" not in name  # Exclude all dataset combination variants
     ]
 
     results = {}
@@ -942,11 +957,11 @@ def get_all_models_roc_data(
     else:
         time_range_days = days or 7
 
-    # Only compare classification models, not regression
+    # Only compare classification models with same class count (3-class), not regression or hierarchical (5-class)
     classification_models = [
         name
         for name, info in MODEL_REGISTRY.items()
-        if info.model_type in ("simplified", "hierarchical", "zones")
+        if info.model_type in ("simplified", "zones", "simple", "tuned", "deep")
     ]
 
     results = {}

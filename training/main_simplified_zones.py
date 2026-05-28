@@ -48,7 +48,7 @@ from data_preparation.feature_engineering import (
     add_binary_targets,
     engineer_all_features,
 )
-from data_preparation.triple_merge import triple_merge
+from data_preparation.triple_merge import triple_merge, DataSourceConfig
 from splice.k_means import LocationClusterer
 
 from training.hierarchical.config import SimplifiedTreeConfig
@@ -67,16 +67,31 @@ from training.baselines import (
     ClassificationBaseline,
     compare_to_baseline,
     log_comparison,
-    print_baseline_comparison_box,
+    print_dual_baseline_comparison,
     add_baseline_args,
     BaselineResult,
+    create_imbalance_baselines,
 )
+from training.metrics_schema import export_model_vs_baselines_csv
+from utils.logging_config import setup_logging
+from utils.csv_filename_generator import generate_csv_filename
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s",
-)
-logger = logging.getLogger(__name__)
+logger = setup_logging(__name__)
+
+# Base model name for output directory
+MODEL_NAME = "simplified_zones"
+
+
+def get_output_dir(config: DataSourceConfig) -> Path:
+    """Get output directory based on data source configuration.
+    
+    Args:
+        config: Data source configuration specifying which datasets are included.
+        
+    Returns:
+        Path to model output directory.
+    """
+    return PROJECT_ROOT / "models" / "trained" / f"{MODEL_NAME}_{config.get_name_suffix()}"
 
 
 @dataclass
@@ -576,9 +591,10 @@ def print_zone_summary(
     )
     print("-" * 85)
 
-    # Save to CSV
+    # Save to CSV with timestamp
     summary_df = pd.DataFrame([r.to_dict() for r in zone_results])
-    csv_path = output_dir / "zone_summary.csv"
+    csv_filename = generate_csv_filename("zone_summary", "simplified_zones")
+    csv_path = output_dir / csv_filename
     summary_df.to_csv(csv_path, index=False)
     print(f"\nSummary saved to: {csv_path}")
 
@@ -673,6 +689,7 @@ def run_zoned_pipeline(
     l2_resampling_method: str | None = None,
     l2_target_recall: float | None = None,
     with_baseline: bool = True,
+    data_config: DataSourceConfig | None = None,
 ) -> list[ZoneResults]:
     """Run the zone-based simplified classification pipeline.
 
@@ -687,14 +704,22 @@ def run_zoned_pipeline(
         l2_weight_multiplier: Override for L2 class weight multiplier.
         l2_resampling_method: Override for L2 resampling method ('borderline' or 'adasyn').
         l2_target_recall: Override for L2 target recall during threshold optimization.
+        data_config: Data source configuration (default: crash only).
 
     Returns:
         List of ZoneResults for all zones.
     """
+    if data_config is None:
+        data_config = DataSourceConfig(use_vehicles=False, use_people=False, use_weather=False)
+    
+    output_dir = get_output_dir(data_config)
+    
     print("=" * 70)
     print(f"ZONE-BASED SIMPLIFIED CLASSIFICATION ({n_clusters} zones)")
     if use_global_l2:
         print("  Using GLOBAL L2 model (shared across zones)")
+    print(f"  Data configuration: {data_config}")
+    print(f"  Output directory: {output_dir}")
     print("=" * 70)
 
     config = SimplifiedTreeConfig(sample_size=sample_size)
@@ -710,7 +735,7 @@ def run_zoned_pipeline(
 
     # Load and merge data
     logger.info("\n[1/5] Loading and merging data...")
-    df = triple_merge()
+    df = triple_merge(config=data_config, verbose=False)
     logger.info(f"Merged dataset shape: {df.shape}")
 
     # Sample if specified
@@ -805,7 +830,6 @@ def run_zoned_pipeline(
 
     # Save models
     logger.info("\n[4/5] Saving models...")
-    output_dir = PROJECT_ROOT / "models" / "trained" / "simplified_zones"
 
     if zone_classifiers:
         save_zone_models(
@@ -845,22 +869,43 @@ def run_zoned_pipeline(
             severe_prop = df["MOST_SEVERE_INJURY"].isin(["FATAL", "INCAPACITATING INJURY"]).mean()
             minor_prop = df["MOST_SEVERE_INJURY"].isin(["NONINCAPACITATING INJURY", "REPORTED, NOT EVIDENT"]).mean()
             no_injury_prop = 1.0 - severe_prop - minor_prop
+            n_classes = 3
 
-            # Most frequent baseline metrics
-            baseline_accuracy = no_injury_prop
-            baseline_f1_macro = (2 * no_injury_prop / (1 + no_injury_prop)) / 3
-            baseline_f1_weighted = no_injury_prop * 2 * no_injury_prop / (1 + no_injury_prop)
-            baseline_severe_recall = 0.0  # Always predicts NO_INJURY, never catches SEVERE
+            # Coin flip baseline (uniform random): each class has 1/3 probability
+            coin_flip_accuracy = 1.0 / n_classes  # ~0.333
+            coin_flip_f1_macro = 1.0 / n_classes  # Uniform predictions
+            coin_flip_f1_weighted = 1.0 / n_classes
+            coin_flip_severe_recall = 1.0 / n_classes  # Random guess catches 1/3 of SEVERE
 
-            # Build baseline result
+            # Biased coin flip baseline (stratified): weighted by class distribution
+            # Expected accuracy = sum of (class_prop^2) for each class
+            biased_accuracy = no_injury_prop**2 + minor_prop**2 + severe_prop**2
+            # Expected F1 macro approximation for stratified random
+            biased_f1_macro = (2 * no_injury_prop**2 / (no_injury_prop + no_injury_prop) + 
+                               2 * minor_prop**2 / (minor_prop + minor_prop) +
+                               2 * severe_prop**2 / (severe_prop + severe_prop)) / 3 if (no_injury_prop > 0 and minor_prop > 0 and severe_prop > 0) else 0.0
+            biased_f1_macro = (no_injury_prop + minor_prop + severe_prop) / 3  # Simplified: class_prop for each
+            biased_f1_weighted = no_injury_prop**2 + minor_prop**2 + severe_prop**2
+            biased_severe_recall = severe_prop  # Stratified predicts SEVERE at its true rate
+
+            # Build baseline results with coin flip naming
             baseline_results = {
-                "most_frequent": BaselineResult(
-                    strategy="most_frequent",
+                "coin_flip": BaselineResult(
+                    strategy="coin_flip",
                     metrics={
-                        "accuracy": baseline_accuracy,
-                        "f1_macro": baseline_f1_macro,
-                        "f1_weighted": baseline_f1_weighted,
-                        "recall_SEVERE": baseline_severe_recall,
+                        "accuracy": coin_flip_accuracy,
+                        "f1_macro": coin_flip_f1_macro,
+                        "f1_weighted": coin_flip_f1_weighted,
+                        "recall_SEVERE": coin_flip_severe_recall,
+                    },
+                ),
+                "biased_coin_flip": BaselineResult(
+                    strategy="biased_coin_flip",
+                    metrics={
+                        "accuracy": biased_accuracy,
+                        "f1_macro": biased_f1_macro,
+                        "f1_weighted": biased_f1_weighted,
+                        "recall_SEVERE": biased_severe_recall,
                     },
                 ),
             }
@@ -875,21 +920,22 @@ def run_zoned_pipeline(
 
             comparison = compare_to_baseline(model_metrics, baseline_results)
 
-            # Print comparison box
-            print_baseline_comparison_box(
+            # Print comparison against both baselines
+            print_dual_baseline_comparison(
                 model_metrics=model_metrics,
                 baseline_results=baseline_results,
-                comparison=comparison,
                 model_name="Zone Ensemble",
-                baseline_strategy="most_frequent",
                 primary_metric="recall_SEVERE",
-                metric_labels={
-                    "accuracy": "Accuracy",
-                    "f1_macro": "F1 Macro",
-                    "f1_weighted": "F1 Weighted",
-                    "recall_SEVERE": "SEVERE Recall",
-                },
             )
+
+            # Export baseline comparison CSV
+            export_model_vs_baselines_csv(
+                model_name="simplified_zones",
+                model_metrics=model_metrics,
+                baseline_results=baseline_results,
+                output_dir=output_dir,
+            )
+            logger.info(f"Saved timestamped baseline comparison to {output_dir}")
 
     return zone_results
 
@@ -1018,8 +1064,31 @@ if __name__ == "__main__":
              "Higher values catch more severe cases but increase false positives.",
     )
     add_baseline_args(parser)
+    # Data source configuration flags
+    parser.add_argument(
+        "--include-vehicle",
+        action="store_true",
+        help="Include vehicle data (count, age, types, speed violations)",
+    )
+    parser.add_argument(
+        "--include-people",
+        action="store_true",
+        help="Include people data (demographics, BAC, safety equipment)",
+    )
+    parser.add_argument(
+        "--include-weather",
+        action="store_true",
+        help="Include weather data (temperature, humidity, rain, wind)",
+    )
 
     args = parser.parse_args()
+    
+    # Build data source configuration from CLI flags
+    data_config = DataSourceConfig(
+        use_vehicles=args.include_vehicle,
+        use_people=args.include_people,
+        use_weather=args.include_weather,
+    )
 
     results = run_zoned_pipeline(
         n_clusters=args.clusters,
@@ -1031,6 +1100,7 @@ if __name__ == "__main__":
         l2_resampling_method=args.l2_resampling,
         l2_target_recall=args.l2_target_recall,
         with_baseline=not args.no_baseline,
+        data_config=data_config,
     )
 
     # Final results

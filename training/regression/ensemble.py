@@ -19,6 +19,7 @@ import torch.nn as nn
 
 from training.regression.config import RegressionConfig, ZoneConfig, EnsembleConfig
 from training.regression.models import CrashCountMLP, ZoneAdjustmentMLP
+from utils.csv_filename_generator import generate_csv_filename
 
 logger = logging.getLogger(__name__)
 
@@ -421,6 +422,70 @@ class CrashCountEnsemble:
         joblib.dump(metadata, save_dir / "metadata.joblib")
 
         logger.info(f"Ensemble saved to {save_dir}")
+
+    def export_training_history(self, output_dir: str | Path) -> None:
+        """Export training history to CSV files.
+        
+        Creates:
+        - training_history_global.csv: Global model training history
+        - training_history_zones.csv: Combined zone model histories
+        - training_curves.png: Visualization of training curves (if plotting available)
+        
+        Args:
+            output_dir: Directory to save CSV files.
+        """
+        import pandas as pd
+        from pathlib import Path
+        
+        output_dir = Path(output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Export global model history
+        if self.global_history:
+            df_global = pd.DataFrame(self.global_history)
+            df_global["epoch"] = range(1, len(df_global) + 1)
+            df_global["model"] = "global"
+            df_global = df_global[["epoch", "model", "train_loss", "val_loss", "lr"]]
+            global_filename = generate_csv_filename("training_history_global", "regression_ensemble")
+            df_global.to_csv(output_dir / global_filename, index=False)
+            logger.info(f"Exported global training history: {len(df_global)} epochs")
+        
+        # Export zone model histories
+        if self.zone_histories:
+            zone_dfs = []
+            for zone_id, history in self.zone_histories.items():
+                df_zone = pd.DataFrame(history)
+                df_zone["epoch"] = range(1, len(df_zone) + 1)
+                df_zone["zone_id"] = zone_id
+                df_zone["model"] = f"zone_{zone_id}"
+                zone_dfs.append(df_zone)
+            
+            if zone_dfs:
+                df_zones = pd.concat(zone_dfs, ignore_index=True)
+                cols = ["epoch", "zone_id", "model", "train_loss"]
+                if "val_loss" in df_zones.columns:
+                    cols.append("val_loss")
+                if "lr" in df_zones.columns:
+                    cols.append("lr")
+                df_zones = df_zones[cols]
+                zones_filename = generate_csv_filename("training_history_zones", "regression_ensemble")
+                df_zones.to_csv(output_dir / zones_filename, index=False)
+                logger.info(f"Exported zone training histories: {len(self.zone_histories)} zones")
+        
+        # Try to generate training curves plot
+        try:
+            from training.plotting.training_curves import plot_training_curves
+            
+            if self.global_history and "val_loss" in self.global_history:
+                plot_training_curves(
+                    train_losses=self.global_history["train_loss"],
+                    val_losses=self.global_history["val_loss"],
+                    output_path=output_dir / "training_curves_global.png",
+                    title="Global Model Training Curves",
+                )
+                logger.info("Generated global training curves plot")
+        except ImportError:
+            pass  # Plotting module not available
 
     @classmethod
     def load(cls, load_dir: str | Path) -> "CrashCountEnsemble":

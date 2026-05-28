@@ -10,6 +10,7 @@ import logging
 from pathlib import Path
 from typing import Any, Union
 
+import joblib
 import numpy as np
 from sklearn.preprocessing import LabelEncoder
 
@@ -24,6 +25,8 @@ from api.models import (
     ZonePredictionResponse,
     RegressionPredictionResponse,
 )
+from api.drift_monitor import record_inference_features
+from api.metrics import record_prediction_metrics
 from training.hierarchical.simplified_classifier import (
     SimplifiedTreeClassifier,
     load_simplified_model,
@@ -109,6 +112,9 @@ class ModelManager:
             from training.regression.predict import CrashCountPredictor
             model = CrashCountPredictor(model_path)
             self._regression_predictor = model
+        elif model_info.model_type in ("simple", "tuned", "deep"):
+            # Simple/tuned/deep models all use same joblib format
+            model = load_simple_rf_model(model_path)
         else:
             raise ValueError(f"Unknown model type: {model_info.model_type}")
 
@@ -118,6 +124,9 @@ class ModelManager:
         # Create label encoders for categorical features (for tree-based models)
         if model_info.model_type in ["simplified", "hierarchical", "zones"]:
             self._create_label_encoders(model_name)
+        elif model_info.model_type in ("simple", "tuned", "deep"):
+            # These models have their own encoders saved during training
+            self._label_encoders[model_name] = model.get("encoders", {})
 
         logger.info(f"Model loaded successfully: {model_name}")
         return model
@@ -199,6 +208,39 @@ class ModelManager:
     def is_model_loaded(self) -> bool:
         """Check if a model is currently loaded."""
         return self._current_model is not None
+
+    def reload_model(self, model_name: str | None = None) -> Any:
+        """Force reload a model, clearing any cached version.
+
+        Args:
+            model_name: Name of the model to reload. If None, reloads current model.
+
+        Returns:
+            Freshly loaded model.
+        """
+        target = model_name or self._current_model
+        if target is None:
+            raise ValueError("No model specified and no current model loaded")
+
+        # Clear from cache
+        if target in self._models:
+            del self._models[target]
+            logger.info(f"Cleared cached model: {target}")
+
+        if target in self._label_encoders:
+            del self._label_encoders[target]
+
+        # Force fresh load
+        return self.load_model(target)
+
+    def clear_cache(self) -> None:
+        """Clear all cached models."""
+        self._models.clear()
+        self._label_encoders.clear()
+        self._current_model = None
+        self._zone_predictor = None
+        self._regression_predictor = None
+        logger.info("Cleared all model caches")
 
     def get_label_encoder(self, feature_name: str) -> LabelEncoder | None:
         """Get the label encoder for a categorical feature."""
@@ -361,6 +403,19 @@ def predict(
     # Prepare features
     features = prepare_features_from_request(request)
 
+    # Record features for drift monitoring
+    feature_dict = {
+        "person_count": request.person_count,
+        "vehicle_count": request.vehicle_count,
+        "posted_speed_limit": request.posted_speed_limit,
+        "age_mean": request.age_mean,
+        "age_min": request.age_min,
+        "age_max": request.age_max,
+        "crash_hour": request.crash_hour,
+        "crash_month": request.crash_month,
+    }
+    record_inference_features(feature_dict)
+
     # Get predictions
     l1_proba, l2_proba = model.predict_proba(features)
     prediction_class = model.predict(features)[0]
@@ -394,6 +449,17 @@ def predict(
 
     # Confidence is the max probability
     confidence = max(probs)
+
+    # Record prediction metrics
+    record_prediction_metrics(
+        model_type="simplified",
+        confidence=confidence,
+        fallback=False,
+    )
+
+    logger.info(
+        f"Prediction: {prediction_label} (confidence={confidence:.3f})"
+    )
 
     return PredictionResponse(
         prediction=prediction_label,  # type: ignore
@@ -436,6 +502,7 @@ def predict_zones(request: PredictionRequest) -> ZonePredictionResponse:
     zone_center = tuple(zone_predictor.centroids[zone_id])
 
     # Get zone-specific model
+    used_fallback = False
     if zone_id in zone_predictor.zone_models:
         zone_model = zone_predictor.zone_models[zone_id]
     else:
@@ -443,9 +510,14 @@ def predict_zones(request: PredictionRequest) -> ZonePredictionResponse:
         available_zones = list(zone_predictor.zone_models.keys())
         if not available_zones:
             raise RuntimeError("No zone models available")
+        original_zone = zone_id
         zone_id = available_zones[0]
         zone_model = zone_predictor.zone_models[zone_id]
         zone_center = tuple(zone_predictor.centroids[zone_id])
+        used_fallback = True
+        logger.warning(
+            f"Zone {original_zone} not found, falling back to zone {zone_id}"
+        )
 
     # Prepare features using the zone model
     model_manager._current_model = model_name
@@ -474,6 +546,18 @@ def predict_zones(request: PredictionRequest) -> ZonePredictionResponse:
     max_idx = probs.index(max(probs))
     prediction_label = class_labels[max_idx]
     confidence = max(probs)
+
+    # Record prediction metrics
+    record_prediction_metrics(
+        model_type="zones",
+        confidence=confidence,
+        fallback=used_fallback,
+        fallback_reason="zone_not_found" if used_fallback else None,
+    )
+
+    logger.info(
+        f"Zone prediction: {prediction_label} (zone={zone_id}, confidence={confidence:.3f}, fallback={used_fallback})"
+    )
 
     return ZonePredictionResponse(
         prediction=prediction_label,  # type: ignore
@@ -881,3 +965,144 @@ def predict_all_zones(request) -> list[ZonePredictionResponse]:
             # Skip zones that fail
 
     return predictions
+
+
+def load_simple_rf_model(model_path: Path) -> dict:
+    """Load a simple Random Forest model from disk.
+
+    Args:
+        model_path: Path to the model directory.
+
+    Returns:
+        Dictionary with model, encoders, and feature names.
+    """
+    model_path = Path(model_path)
+
+    model = joblib.load(model_path / "model.joblib")
+    encoders = joblib.load(model_path / "encoders.joblib")
+    feature_names = joblib.load(model_path / "feature_names.joblib")
+
+    return {
+        "model": model,
+        "encoders": encoders,
+        "feature_names": feature_names,
+    }
+
+
+def prepare_features_for_simple_model(
+    request: PredictionRequest,
+    model_data: dict,
+) -> np.ndarray:
+    """Convert API request to feature array for simple RF model.
+
+    Args:
+        request: PredictionRequest with input features.
+        model_data: Dictionary with model, encoders, and feature names.
+
+    Returns:
+        NumPy array of features ready for prediction.
+    """
+    encoders = model_data["encoders"]
+    feature_names = model_data["feature_names"]
+
+    # Map request fields to feature names
+    feature_mapping = {
+        "FIRST_CRASH_TYPE": request.first_crash_type,
+        "DAMAGE": request.damage,
+        "PRIM_CONTRIBUTORY_CAUSE": request.prim_contributory_cause,
+        "TRAFFIC_CONTROL_DEVICE": request.traffic_control_device,
+        "DEVICE_CONDITION": request.device_condition,
+        "WEATHER_CONDITION": request.weather_condition,
+        "LIGHTING_CONDITION": request.lighting_condition,
+        "TRAFFICWAY_TYPE": request.trafficway_type,
+        "ROADWAY_SURFACE_COND": request.roadway_surface_cond,
+        "ROAD_DEFECT": request.road_defect,
+        "ALIGNMENT": request.alignment,
+        "POSTED_SPEED_LIMIT": request.posted_speed_limit,
+        "NUM_UNITS": request.vehicle_count,
+        "CRASH_HOUR": request.crash_hour,
+        "CRASH_DAY_OF_WEEK": request.crash_day_of_week,
+        "CRASH_MONTH": request.crash_month,
+    }
+
+    features = []
+    for col in feature_names:
+        if col in feature_mapping:
+            value = feature_mapping[col]
+
+            # Apply label encoding for categorical features
+            if col in encoders and col != "target":
+                encoder = encoders[col]
+                try:
+                    value = encoder.transform([str(value)])[0]
+                except ValueError:
+                    # Unknown value - try UNKNOWN
+                    try:
+                        value = encoder.transform(["UNKNOWN"])[0]
+                    except ValueError:
+                        # Fall back to 0
+                        value = 0
+
+            features.append(float(value) if not isinstance(value, (int, float)) else value)
+        else:
+            # Feature not in mapping, use default value
+            features.append(0)
+
+    return np.array([features])
+
+
+def predict_simple(
+    request: PredictionRequest, model_name: str = "simple_rf"
+) -> PredictionResponse:
+    """Make a prediction using the simple Random Forest model.
+
+    Args:
+        request: PredictionRequest with input features.
+        model_name: Name of the simple model to use.
+
+    Returns:
+        PredictionResponse with prediction and probabilities.
+    """
+    # Ensure model is loaded
+    model_data = model_manager.load_model(model_name)
+
+    # Prepare features
+    features = prepare_features_for_simple_model(request, model_data)
+
+    # Get predictions
+    model = model_data["model"]
+    prediction = model.predict(features)
+    # Handle CatBoost and other models that return 2D arrays or float indices
+    if hasattr(prediction, "flatten"):
+        prediction = prediction.flatten()
+    prediction_idx = int(prediction[0])
+    
+    probabilities = model.predict_proba(features)
+    # Handle 2D probability arrays
+    if probabilities.ndim > 1:
+        probabilities = probabilities[0]
+    else:
+        probabilities = probabilities.flatten()
+
+    # Class names
+    class_names = ["NO_INJURY", "MINOR", "SEVERE"]
+    prediction_label = class_names[prediction_idx]
+
+    # Get probabilities in order
+    prob_no_injury = probabilities[0]
+    prob_minor = probabilities[1]
+    prob_severe = probabilities[2]
+
+    # Confidence is the max probability
+    confidence = max(probabilities)
+
+    return PredictionResponse(
+        prediction=prediction_label,  # type: ignore
+        probabilities=PredictionProbabilities(
+            no_injury=float(prob_no_injury),
+            minor=float(prob_minor),
+            severe=float(prob_severe),
+        ),
+        confidence=float(confidence),
+        model_name=model_name,
+    )
