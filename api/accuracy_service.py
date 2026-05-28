@@ -826,11 +826,15 @@ def evaluate_all_models(
     else:
         time_range_days = days or 7
 
-    # Only compare classification models with same class count (3-class), not regression or hierarchical (5-class)
+    # Only compare base classification models (3-class), excluding:
+    # - regression models
+    # - hierarchical (5-class) models
+    # - dataset combination variants (e.g., simple_rf_crash, simplified_3class_crash_vehicle)
     classification_models = [
         name
         for name, info in MODEL_REGISTRY.items()
         if info.model_type in ("simplified", "zones", "simple", "tuned", "deep")
+        and "_crash" not in name  # Exclude all dataset combination variants
     ]
 
     results = {}
