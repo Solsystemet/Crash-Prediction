@@ -487,3 +487,48 @@ class ModelComparisonResponse(BaseModel):
     time_range_days: int = Field(description="Time range used for evaluation")
     max_crashes: int = Field(description="Max crashes evaluated per model")
     computed_at: datetime = Field(description="When comparison was computed")
+
+
+# ============================================================================
+# Available Models Response Models
+# ============================================================================
+
+
+class DatasetConfigResponse(BaseModel):
+    """Dataset configuration for a model."""
+
+    use_vehicles: bool = Field(description="Whether vehicle data is included")
+    use_people: bool = Field(description="Whether people data is included")
+    use_weather: bool = Field(description="Whether weather data is included")
+    suffix: str = Field(description="Dataset suffix (e.g., 'crash_vehicle_people')")
+    display_name: str = Field(description="Human-readable dataset description")
+
+
+class AvailableModelInfo(BaseModel):
+    """Information about an available model for selection."""
+
+    key: str = Field(description="Model key/identifier for API calls")
+    name: str = Field(description="Human-readable model name")
+    description: str = Field(description="Model description")
+    model_type: str = Field(
+        description="Model type (simplified, hierarchical, zones, etc.)"
+    )
+    datasets: DatasetConfigResponse = Field(
+        description="Dataset configuration used to train this model"
+    )
+    is_available: bool = Field(
+        description="Whether the model is trained and available for use"
+    )
+
+
+class AvailableModelsResponse(BaseModel):
+    """Response schema for listing available models."""
+
+    models: list[AvailableModelInfo] = Field(
+        description="List of all available/possible models"
+    )
+    available_count: int = Field(description="Number of trained models available")
+    total_count: int = Field(description="Total number of possible models")
+    dataset_combinations: int = Field(
+        default=8, description="Number of dataset combinations (2^3)"
+    )

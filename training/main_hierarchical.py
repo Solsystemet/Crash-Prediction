@@ -43,7 +43,7 @@ from data_preparation.feature_engineering import (
     add_ordinal_severity,
     engineer_all_features,
 )
-from data_preparation.triple_merge import triple_merge
+from data_preparation.triple_merge import triple_merge, DataSourceConfig
 
 # Import hierarchical classification package
 from training.hierarchical import (
@@ -56,7 +56,11 @@ from training.hierarchical import (
     prepare_hierarchical_targets,
     evaluate_hierarchical,
 )
-from training.hierarchical.evaluation import plot_roc_curves, export_roc_data
+from training.hierarchical.evaluation import (
+    plot_roc_curves,
+    export_roc_data,
+    generate_all_evaluation_plots,
+)
 from training.hierarchical.tree_classifier import save_hierarchical_model
 from training.feature_selection import filter_by_importance
 from training.baselines import (
@@ -66,12 +70,25 @@ from training.baselines import (
     print_baseline_comparison_box,
     add_baseline_args,
 )
+from training.metrics_schema import export_model_vs_baselines_csv
+from utils.logging_config import setup_logging
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s",
-)
-logger = logging.getLogger(__name__)
+logger = setup_logging(__name__)
+
+# Base model name for output directory
+MODEL_NAME = "hierarchical_5class"
+
+
+def get_output_dir(config: DataSourceConfig) -> Path:
+    """Get output directory based on data source configuration.
+    
+    Args:
+        config: Data source configuration specifying which datasets are included.
+        
+    Returns:
+        Path to model output directory.
+    """
+    return PROJECT_ROOT / "models" / "trained" / f"{MODEL_NAME}_{config.get_name_suffix()}"
 
 
 def stratified_sample_with_fatal(
@@ -218,6 +235,7 @@ def run_hierarchical_pipeline(
     sample_size: int | None = None,
     feature_filter: str = "drop-low",
     with_baseline: bool = True,
+    data_config: DataSourceConfig | None = None,
 ) -> dict:
     """Run the full hierarchical classification pipeline.
 
@@ -225,14 +243,22 @@ def run_hierarchical_pipeline(
         model_type: Which classifier to use ('tree' or 'neural').
         sample_size: Optional limit on dataset size for faster experimentation.
         feature_filter: Feature filtering mode ("none" or "drop-low").
+        data_config: Data source configuration (default: crash only).
 
     Returns:
         Dictionary of evaluation results.
     """
+    if data_config is None:
+        data_config = DataSourceConfig(use_vehicles=False, use_people=False, use_weather=False)
+    
+    output_dir = get_output_dir(data_config)
+    
     logger.info("=" * 60)
     logger.info("HIERARCHICAL CLASSIFICATION PIPELINE")
     logger.info("=" * 60)
     logger.info(f"Model type: {model_type}")
+    logger.info(f"Data configuration: {data_config}")
+    logger.info(f"Output directory: {output_dir}")
 
     # Create config based on model type
     if model_type == "tree":
@@ -244,7 +270,7 @@ def run_hierarchical_pipeline(
 
     # Load and merge data
     logger.info("\n[1/6] Loading and merging data...")
-    df = triple_merge()
+    df = triple_merge(config=data_config, verbose=False)
     logger.info(f"Merged dataset shape: {df.shape}")
 
     # Sample if specified - use stratified sampling to ensure FATAL representation
@@ -394,6 +420,15 @@ def run_hierarchical_pipeline(
         }
         results["baseline_comparison"] = comparison
 
+        # Export baseline comparison CSV
+        export_model_vs_baselines_csv(
+            model_name="hierarchical_5class",
+            model_metrics=model_metrics,
+            baseline_results=baseline_results,
+            output_dir=output_dir,
+        )
+        logger.info(f"Saved timestamped baseline comparison to {output_dir}")
+
     # Summary
     logger.info("\n" + "=" * 60)
     logger.info("SUMMARY")
@@ -453,8 +488,7 @@ def run_hierarchical_pipeline(
     )
 
     # Export ROC data as JSON for frontend visualization
-    model_dir = PROJECT_ROOT / "models" / "trained" / "hierarchical_5class"
-    roc_json_path = model_dir / "roc_data.json"
+    roc_json_path = output_dir / "roc_data.json"
     export_roc_data(
         y_true_levels=y_true_levels,
         y_proba_levels=y_proba_levels,
@@ -467,11 +501,24 @@ def run_hierarchical_pipeline(
         logger.info(f"  {level_name}: AUC = {auc:.4f}")
         results[f"auc_{level_name}"] = auc
 
+    # Generate comprehensive evaluation plots
+    logger.info("\nGenerating comprehensive evaluation plots...")
+    try:
+        plot_results = generate_all_evaluation_plots(
+            clf=clf,
+            X_test=X_test,
+            targets=targets_test,
+            output_dir=output_dir,
+            model_name="hierarchical_5class",
+        )
+        logger.info(f"Generated {len(plot_results.get('plots', []))} evaluation artifacts")
+    except Exception as e:
+        logger.warning(f"Could not generate all evaluation plots: {e}")
+
     # Save model (only for tree-based classifiers)
     if model_type == "tree":
-        model_dir = PROJECT_ROOT / "models" / "trained" / "hierarchical_5class"
-        save_hierarchical_model(clf, str(model_dir))
-        logger.info(f"Model saved to {model_dir}")
+        save_hierarchical_model(clf, str(output_dir))
+        logger.info(f"Model saved to {output_dir}")
 
     return results
 
@@ -501,14 +548,38 @@ if __name__ == "__main__":
         help="Feature filtering mode: 'none' (all features), 'drop-low' (drop DROP features), 'drop-review' (drop DROP + REVIEW features). Default: drop-low",
     )
     add_baseline_args(parser)
+    # Data source configuration flags
+    parser.add_argument(
+        "--include-vehicle",
+        action="store_true",
+        help="Include vehicle data (count, age, types, speed violations)",
+    )
+    parser.add_argument(
+        "--include-people",
+        action="store_true",
+        help="Include people data (demographics, BAC, safety equipment)",
+    )
+    parser.add_argument(
+        "--include-weather",
+        action="store_true",
+        help="Include weather data (temperature, humidity, rain, wind)",
+    )
 
     args = parser.parse_args()
+    
+    # Build data source configuration from CLI flags
+    data_config = DataSourceConfig(
+        use_vehicles=args.include_vehicle,
+        use_people=args.include_people,
+        use_weather=args.include_weather,
+    )
 
     results = run_hierarchical_pipeline(
         model_type=args.model,
         sample_size=args.sample,
         feature_filter=args.feature_filter,
         with_baseline=not args.no_baseline,
+        data_config=data_config,
     )
 
     # Print final summary

@@ -25,6 +25,8 @@ from api.models import (
     ZonePredictionResponse,
     RegressionPredictionResponse,
 )
+from api.drift_monitor import record_inference_features
+from api.metrics import record_prediction_metrics
 from training.hierarchical.simplified_classifier import (
     SimplifiedTreeClassifier,
     load_simplified_model,
@@ -34,7 +36,6 @@ from training.hierarchical.tree_classifier import (
     load_hierarchical_model,
 )
 from training.hierarchical.simplified_targets import SIMPLIFIED_CLASS_NAMES
-from training.ensemble.stacking import StackingEnsemble  # Required for joblib deserialization
 
 logger = logging.getLogger(__name__)
 
@@ -111,8 +112,8 @@ class ModelManager:
             from training.regression.predict import CrashCountPredictor
             model = CrashCountPredictor(model_path)
             self._regression_predictor = model
-        elif model_info.model_type in ("simple", "tuned", "deep", "ensemble"):
-            # Simple/tuned/deep/ensemble models all use same joblib format
+        elif model_info.model_type in ("simple", "tuned", "deep"):
+            # Simple/tuned/deep models all use same joblib format
             model = load_simple_rf_model(model_path)
         else:
             raise ValueError(f"Unknown model type: {model_info.model_type}")
@@ -123,7 +124,7 @@ class ModelManager:
         # Create label encoders for categorical features (for tree-based models)
         if model_info.model_type in ["simplified", "hierarchical", "zones"]:
             self._create_label_encoders(model_name)
-        elif model_info.model_type in ("simple", "tuned", "deep", "ensemble"):
+        elif model_info.model_type in ("simple", "tuned", "deep"):
             # These models have their own encoders saved during training
             self._label_encoders[model_name] = model.get("encoders", {})
 
@@ -402,6 +403,19 @@ def predict(
     # Prepare features
     features = prepare_features_from_request(request)
 
+    # Record features for drift monitoring
+    feature_dict = {
+        "person_count": request.person_count,
+        "vehicle_count": request.vehicle_count,
+        "posted_speed_limit": request.posted_speed_limit,
+        "age_mean": request.age_mean,
+        "age_min": request.age_min,
+        "age_max": request.age_max,
+        "crash_hour": request.crash_hour,
+        "crash_month": request.crash_month,
+    }
+    record_inference_features(feature_dict)
+
     # Get predictions
     l1_proba, l2_proba = model.predict_proba(features)
     prediction_class = model.predict(features)[0]
@@ -435,6 +449,17 @@ def predict(
 
     # Confidence is the max probability
     confidence = max(probs)
+
+    # Record prediction metrics
+    record_prediction_metrics(
+        model_type="simplified",
+        confidence=confidence,
+        fallback=False,
+    )
+
+    logger.info(
+        f"Prediction: {prediction_label} (confidence={confidence:.3f})"
+    )
 
     return PredictionResponse(
         prediction=prediction_label,  # type: ignore
@@ -477,6 +502,7 @@ def predict_zones(request: PredictionRequest) -> ZonePredictionResponse:
     zone_center = tuple(zone_predictor.centroids[zone_id])
 
     # Get zone-specific model
+    used_fallback = False
     if zone_id in zone_predictor.zone_models:
         zone_model = zone_predictor.zone_models[zone_id]
     else:
@@ -484,9 +510,14 @@ def predict_zones(request: PredictionRequest) -> ZonePredictionResponse:
         available_zones = list(zone_predictor.zone_models.keys())
         if not available_zones:
             raise RuntimeError("No zone models available")
+        original_zone = zone_id
         zone_id = available_zones[0]
         zone_model = zone_predictor.zone_models[zone_id]
         zone_center = tuple(zone_predictor.centroids[zone_id])
+        used_fallback = True
+        logger.warning(
+            f"Zone {original_zone} not found, falling back to zone {zone_id}"
+        )
 
     # Prepare features using the zone model
     model_manager._current_model = model_name
@@ -515,6 +546,18 @@ def predict_zones(request: PredictionRequest) -> ZonePredictionResponse:
     max_idx = probs.index(max(probs))
     prediction_label = class_labels[max_idx]
     confidence = max(probs)
+
+    # Record prediction metrics
+    record_prediction_metrics(
+        model_type="zones",
+        confidence=confidence,
+        fallback=used_fallback,
+        fallback_reason="zone_not_found" if used_fallback else None,
+    )
+
+    logger.info(
+        f"Zone prediction: {prediction_label} (zone={zone_id}, confidence={confidence:.3f}, fallback={used_fallback})"
+    )
 
     return ZonePredictionResponse(
         prediction=prediction_label,  # type: ignore
@@ -1028,8 +1071,18 @@ def predict_simple(
 
     # Get predictions
     model = model_data["model"]
-    prediction_idx = model.predict(features)[0]
-    probabilities = model.predict_proba(features)[0]
+    prediction = model.predict(features)
+    # Handle CatBoost and other models that return 2D arrays or float indices
+    if hasattr(prediction, "flatten"):
+        prediction = prediction.flatten()
+    prediction_idx = int(prediction[0])
+    
+    probabilities = model.predict_proba(features)
+    # Handle 2D probability arrays
+    if probabilities.ndim > 1:
+        probabilities = probabilities[0]
+    else:
+        probabilities = probabilities.flatten()
 
     # Class names
     class_names = ["NO_INJURY", "MINOR", "SEVERE"]
