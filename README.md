@@ -26,17 +26,8 @@ Download the following datasets and place them in the `data/` directory with the
 ## Installation
 
 ```bash
-# Create virtual environment
-python -m venv .venv
-
-# Activate (Windows)
-.\.venv\Scripts\Activate.ps1
-
-# Activate (Linux/Mac)
-source .venv/bin/activate
-
-# Install dependencies
-pip install -r requirements.txt
+# Install dependencies (creates .venv automatically)
+uv sync
 ```
 
 ## Backend API
